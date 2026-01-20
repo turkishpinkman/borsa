@@ -5,7 +5,6 @@ from plotly.subplots import make_subplots
 import google.generativeai as genai
 import pandas as pd
 import numpy as np
-import vectorbt as vbt
 import optuna
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -462,104 +461,147 @@ def get_weekly_trend(symbol):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3.6 PROFESYONEL BACKTEST & OPTİMİZASYON (VectorBT + Optuna)
 # ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3.6 PROFESYONEL BACKTEST & OPTİMİZASYON (Pandas Vectorized)
+# ═══════════════════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=600)
 def run_vectorbt_backtest(symbol, rsi_period=14, ema_period=200, rsi_threshold=40):
     """
-    VectorBT ile Hızlı & Profesyonel Backtest
+    Pandas Vectorized Lightweight Backtest (No VectorBT)
     - Slippage & Komisyon Dâhil
     - Next Open (Bir sonraki açılış) işlem girişi
     - ATR Tabanlı Dinamik Stop/Profit
     """
     try:
         # Veri çek
-        data = vbt.YFData.download(symbol, period="2y", interval="1d").get()
-        if data.empty: return None
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period="2y")
+        if df.empty or len(df) < 200: return None
         
-        # ─── İNDİKATÖRLER (Vectorized) ───
+        # ─── İNDİKATÖRLER ───
         # RSI
-        rsi = vbt.RSI.run(data['Close'], window=rsi_period).rsi
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_period).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
         
         # EMA
-        ema = vbt.MA.run(data['Close'], window=ema_period, ewm=True).ma
-        ema50 = vbt.MA.run(data['Close'], window=50, ewm=True).ma
+        df['EMA_Trend'] = df['Close'].ewm(span=ema_period, adjust=False).mean()
         
         # ATR (Volatilite)
-        atr = vbt.ATR.run(data['High'], data['Low'], data['Close'], window=14).atr
+        high_low = df['High'] - df['Low']
+        high_close = np.abs(df['High'] - df['Close'].shift())
+        low_close = np.abs(df['Low'] - df['Close'].shift())
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = tr.rolling(window=14).mean()
         
-        # ADX (Trend Gücü) - Pandas TA mantığıyla manuel hesap
-        high = data['High']
-        low = data['Low']
-        close = data['Close']
-        tr0 = abs(high - low)
-        tr1 = abs(high - close.shift())
-        tr2 = abs(low - close.shift())
-        tr = pd.concat([tr0, tr1, tr2], axis=1).max(axis=1)
-        # Basitleştirilmiş vektörel ADX (veya kütüphane varsa kullanılır)
-        # Hız için basit trend filtresi: EMA Cross + RSI ile devam
+        # ─── SİNYALLER ───
+        # 1. Trend Filtresi
+        trend_condition = df['Close'] > df['EMA_Trend']
         
-        # ─── SİNYAL MANTIĞI (Skorlama Benzeri) ───
-        # 1. Trend Filtresi (Fiyat > EMA)
-        trend_condition = data['Close'] > ema
+        # 2. RSI Pullback
+        rsi_condition = df['RSI'] < rsi_threshold
         
-        # 2. RSI Pullback (RSI < Eşik)
-        rsi_condition = rsi < rsi_threshold
+        # AL Sinyalleri (Kapanışta oluşur)
+        df['Entry_Signal'] = trend_condition & rsi_condition
         
-        # 3. Yükseliş Trendinde Düzeltme (Golden Setup)
-        entries = trend_condition & rsi_condition
+        # ─── SİMÜLASYON (Iterative - Hızlı) ───
+        initial_capital = 10000
+        cash = initial_capital
+        position = 0
+        trades = 0
+        wins = 0
         
-        # Çıkışlar (ATR bazlı)
-        # VBT sl_stop ve tp_stop parametreleri yüzde ister. 
-        # Her mum için ATR/Close oranını hesaplayıp dinamik stop veremeyiz (VBT basic'te sabit % ister).
-        # Ancak "vbt.Portfolio.from_signals" gelişmiş modda dinamik stop destekler.
-        # Basitlik ve performans için ORTALAMA ATR yüzdesini kullanacağız ya da
-        # VBT'nin exit array'ini manuel oluşturacağız.
+        commission = 0.001 # %0.1
+        slippage = 0.001   # %0.1
         
-        # Manuel Exit Sinyalleri (Basit Kar Al / Stop Ol)
-        # Burada VBT'nin otomatik SL/TP motorunu kullanıyoruz (daha hızlı)
-        # Ortalama ATR volatilite yüzdesini alıp dinamikleştiriyoruz
-        avg_volatility = (atr / data['Close']).mean()
-        sl_stop = avg_volatility * 2.0  # 2 ATR Stop
-        tp_stop = avg_volatility * 2.0  # 2 ATR Kar (1:1 Risk/Reward)
+        # İşlem durumu
+        in_position = False
+        entry_price = 0
+        stop_loss = 0
+        take_profit = 0
         
-        # ─── SİMÜLASYON (NEXT OPEN EXECUTION) ───
-        # Fiyat Dizisi: Girişler "Bir Sonraki Açılış"tan yapılır
-        # VBT'de 'price' argümanı işlemin gerçekleşeceği fiyatı belirler.
-        # Sinyal T anında geldiyse, işlem T+1 Open'da olur.
-        # Bu yüzden price dizisini 1 gün kaydırıyoruz (veya open dizisini veriyoruz)
-        # Entry sinyalleri T kapanışında oluşur. İşlem T+1 Open.
+        # Vektörel yerine iteratif (Logic karmaşık olduğu için safer)
+        # Ancak Numba performansı olmadan da 2 yıl için çok hızlıdır.
+        # Next Open Execution: i gününde sinyal varsa, i+1 gününde Open'dan gir.
         
-        # Bu yaklaşımda execute_on_close=False (varsayılan)
-        # Sinyal T'de ise işlem T+1'de denenir. Fiyat olarak Open kullanılır.
-        pf = vbt.Portfolio.from_signals(
-            close=data['Close'], 
-            entries=entries, 
-            exits=None, # SL/TP halledecek
-            price=data['Open'], # İşlemler Açılış fiyatından
-            size=1000, # Sabit 1000$ riski (veya adet)
-            size_type='value',
-            sl_stop=sl_stop,
-            tp_stop=tp_stop,
-            fees=0.001, # %0.1 Komisyon
-            slippage=0.001, # %0.1 Kayma
-            freq='1D',
-            init_cash=10000
-        )
+        signals = df['Entry_Signal'].values
+        opens = df['Open'].values
+        closes = df['Close'].values
+        atrs = df['ATR'].values
+        dates = df.index
         
-        # İstatistikler
-        stats = pf.stats()
-        total_return = stats['Total Return [%]']
-        win_rate = stats['Win Rate [%]']
-        total_trades = stats['Total Trades']
+        for i in range(len(df) - 1):
+            # Eğer pozisyondaysak ÇIKIŞ kontrolü (i günündeki fiyatlarla)
+            if in_position:
+                current_price = list(df.iloc[i:i+1]['Low'])[0] # Low ile stop kontrolü
+                high_price = list(df.iloc[i:i+1]['High'])[0] # High ile TP kontrolü
+                
+                # Önce Stop Loss Kontrolü (Low stopun altındaysa)
+                if current_price <= stop_loss:
+                    exit_price = stop_loss * (1 - slippage) # Kayma ile kötü fiyattan çıkış
+                    # Komisyon
+                    gross_val = position * exit_price
+                    net_val = gross_val * (1 - commission)
+                    cash += net_val
+                    
+                    if net_val > (entry_price * position): wins += 1
+                    trades += 1
+                    in_position = False
+                    continue
+                
+                # Take Profit Kontrolü
+                if high_price >= take_profit:
+                    exit_price = take_profit * (1 - slippage)
+                    gross_val = position * exit_price
+                    net_val = gross_val * (1 - commission)
+                    cash += net_val
+                    
+                    if net_val > (entry_price * position): wins += 1
+                    trades += 1
+                    in_position = False
+                    continue
+            
+            # Eğer pozisyonda değilsek GİRİŞ kontrolü (i gününde sinyal var mı?)
+            if not in_position and signals[i]:
+                # İşlem bir sonraki günün (i+1) AÇILIŞ fiyatından yapılır
+                entry_exec_price = opens[i+1] * (1 + slippage) # Kayma ile pahalı al
+                
+                # Risk yönetimi
+                balance_to_risk = 1000 # Sabit 1000$ ile giriş
+                if cash < 1000: balance_to_risk = cash
+                
+                size = balance_to_risk / entry_exec_price
+                cost = size * entry_exec_price * (1 + commission)
+                
+                if cash >= cost:
+                    cash -= cost
+                    position = size
+                    entry_price = entry_exec_price
+                    in_position = True
+                    
+                    # Stop/TP Belirle (ATR'ye göre)
+                    current_atr = atrs[i]
+                    avg_volatility = current_atr if not np.isnan(current_atr) else (entry_exec_price * 0.02)
+                    stop_loss = entry_exec_price - (2 * avg_volatility)
+                    take_profit = entry_exec_price + (2 * avg_volatility)
+        
+        # Son durum
+        final_value = cash
+        if in_position:
+            final_value += position * closes[-1]
+            
+        total_return = ((final_value - initial_capital) / initial_capital) * 100
+        win_rate = (wins / trades * 100) if trades > 0 else 0
         
         return {
-            "total_trades": int(total_trades),
+            "total_trades": trades,
             "win_rate": win_rate,
-            "total_pnl": total_return,
-            "pf": pf # İleride grafik çizmek için
+            "total_pnl": total_return
         }
         
     except Exception as e:
-        # Fallback (VBT çalışmazsa hata döndür)
         return {"error": str(e)}
 
 def optimize_strategy(symbol):
