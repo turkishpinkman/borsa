@@ -7,211 +7,229 @@ import pandas as pd
 import numpy as np
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 1. SAYFA AYARLARI & PREMIUM CSS
+# 1. SAYFA AYARLARI & PROFESYONEL CSS
 # ═══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Finansal Analiz Pro",
-    page_icon="📊",
+    page_title="TRENDER PRO",
+    page_icon="◆",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# Premium Koyu Tema CSS
+# Profesyonel Koyu Tema CSS
 st.markdown("""
 <style>
-    /* Ana Tema - Koyu Gradient */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    
+    * {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    
+    /* Ana Tema */
     .stApp {
-        background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 50%, #16213e 100%);
+        background: #0a0a0c;
     }
     
-    /* Glassmorphism Kartlar */
-    .glass-card {
-        background: rgba(255, 255, 255, 0.03);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 20px;
-        padding: 1.5rem;
-        margin: 0.5rem 0;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-        transition: all 0.3s ease;
+    /* Logo & Başlık */
+    .brand-header {
+        text-align: center;
+        padding: 1rem 0 2rem 0;
     }
     
-    .glass-card:hover {
-        border-color: rgba(255, 255, 255, 0.15);
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-        transform: translateY(-2px);
-    }
-    
-    /* Başlık Stili */
-    .main-title {
-        font-size: 2.5rem;
+    .brand-logo {
+        font-size: 2rem;
         font-weight: 800;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        text-align: center;
-        margin-bottom: 0.5rem;
-        letter-spacing: -1px;
+        color: #ffffff;
+        letter-spacing: 3px;
+        margin-bottom: 0.25rem;
     }
     
-    .sub-title {
+    .brand-logo span {
+        color: #00d4aa;
+    }
+    
+    .brand-tagline {
+        color: rgba(255,255,255,0.4);
+        font-size: 0.75rem;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+    }
+    
+    /* Karar Paneli - Dopamin Tetikleyici */
+    .decision-panel {
+        background: linear-gradient(180deg, rgba(20,20,25,1) 0%, rgba(15,15,18,1) 100%);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 16px;
+        padding: 2rem;
+        margin: 1rem 0 2rem 0;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .decision-panel::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: linear-gradient(90deg, transparent, var(--signal-color), transparent);
+    }
+    
+    .signal-label {
         text-align: center;
-        color: rgba(255, 255, 255, 0.5);
-        font-size: 0.95rem;
-        margin-bottom: 2rem;
+        font-size: 0.7rem;
+        color: rgba(255,255,255,0.35);
+        text-transform: uppercase;
+        letter-spacing: 3px;
+        margin-bottom: 0.5rem;
+    }
+    
+    .signal-value {
+        text-align: center;
+        font-size: 3.5rem;
+        font-weight: 800;
+        letter-spacing: 2px;
+        margin-bottom: 0.5rem;
+        text-shadow: 0 0 60px var(--signal-color);
+    }
+    
+    .signal-score {
+        text-align: center;
+        font-size: 1rem;
+        color: rgba(255,255,255,0.5);
+        margin-bottom: 1.5rem;
+    }
+    
+    .score-bar-container {
+        background: rgba(255,255,255,0.05);
+        border-radius: 4px;
+        height: 6px;
+        overflow: hidden;
+        margin: 0 auto;
+        max-width: 300px;
+    }
+    
+    .score-bar-fill {
+        height: 100%;
+        border-radius: 4px;
+        transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    
+    /* Pulse Animasyonu - Dikkat Çekici */
+    @keyframes pulse-glow {
+        0%, 100% { box-shadow: 0 0 20px var(--signal-color); }
+        50% { box-shadow: 0 0 40px var(--signal-color), 0 0 60px var(--signal-color); }
+    }
+    
+    .pulse-active {
+        animation: pulse-glow 2s infinite;
     }
     
     /* Metrik Kartları */
     [data-testid="metric-container"] {
-        background: rgba(255, 255, 255, 0.03);
-        backdrop-filter: blur(15px);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 16px;
+        background: rgba(255,255,255,0.02);
+        border: 1px solid rgba(255,255,255,0.04);
+        border-radius: 12px;
         padding: 1rem;
-        transition: all 0.3s ease;
-    }
-    
-    [data-testid="metric-container"]:hover {
-        background: rgba(255, 255, 255, 0.05);
-        border-color: rgba(255, 255, 255, 0.12);
     }
     
     [data-testid="stMetricLabel"] {
-        color: rgba(255, 255, 255, 0.6) !important;
-        font-size: 0.85rem !important;
+        color: rgba(255,255,255,0.4) !important;
+        font-size: 0.7rem !important;
+        text-transform: uppercase !important;
+        letter-spacing: 1px !important;
     }
     
     [data-testid="stMetricValue"] {
         color: #ffffff !important;
-        font-weight: 700 !important;
-        font-size: 1.4rem !important;
+        font-weight: 600 !important;
+        font-size: 1.25rem !important;
     }
     
-    /* Pozitif/Negatif Değişim */
-    [data-testid="stMetricDelta"] svg {
-        display: none;
+    [data-testid="stMetricDelta"] {
+        font-size: 0.75rem !important;
     }
     
-    /* Input Alanı */
+    [data-testid="stMetricDelta"] svg { display: none; }
+    
+    /* Input */
     .stTextInput > div > div {
-        background: rgba(255, 255, 255, 0.05) !important;
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
-        border-radius: 12px !important;
+        background: rgba(255,255,255,0.03) !important;
+        border: 1px solid rgba(255,255,255,0.08) !important;
+        border-radius: 8px !important;
         color: white !important;
-        transition: all 0.3s ease !important;
     }
     
     .stTextInput > div > div:focus-within {
-        border-color: #667eea !important;
-        box-shadow: 0 0 20px rgba(102, 126, 234, 0.3) !important;
+        border-color: #00d4aa !important;
+        box-shadow: 0 0 0 1px #00d4aa !important;
     }
     
-    /* Buton Stili */
+    /* Buton */
     .stButton > button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-        color: white !important;
+        background: #00d4aa !important;
+        color: #000000 !important;
         border: none !important;
-        border-radius: 12px !important;
+        border-radius: 8px !important;
         font-weight: 600 !important;
-        padding: 0.6rem 2rem !important;
-        transition: all 0.3s ease !important;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4) !important;
+        padding: 0.6rem 1.5rem !important;
+        transition: all 0.2s ease !important;
     }
     
     .stButton > button:hover {
-        transform: translateY(-2px) !important;
-        box-shadow: 0 6px 25px rgba(102, 126, 234, 0.5) !important;
+        background: #00eebb !important;
+        transform: translateY(-1px) !important;
     }
     
-    /* Expander Stili */
-    .streamlit-expanderHeader {
-        background: rgba(255, 255, 255, 0.03) !important;
-        border-radius: 12px !important;
-        color: white !important;
-    }
-    
-    /* Status Widget */
-    [data-testid="stStatusWidget"] {
-        background: rgba(255, 255, 255, 0.03) !important;
-        border: 1px solid rgba(255, 255, 255, 0.06) !important;
-        border-radius: 16px !important;
+    /* Bölüm Başlıkları */
+    .section-title {
+        color: rgba(255,255,255,0.5);
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        margin: 2rem 0 1rem 0;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
     }
     
     /* Divider */
     hr {
-        border-color: rgba(255, 255, 255, 0.06) !important;
+        border-color: rgba(255,255,255,0.04) !important;
         margin: 1.5rem 0 !important;
+    }
+    
+    /* Status Widget */
+    [data-testid="stStatusWidget"] {
+        background: rgba(255,255,255,0.02) !important;
+        border: 1px solid rgba(255,255,255,0.04) !important;
+        border-radius: 12px !important;
     }
     
     /* Footer */
     .footer {
         text-align: center;
-        color: rgba(255, 255, 255, 0.3);
-        font-size: 0.8rem;
-        padding: 2rem 0 1rem 0;
-        margin-top: 2rem;
-        border-top: 1px solid rgba(255, 255, 255, 0.05);
+        color: rgba(255,255,255,0.2);
+        font-size: 0.65rem;
+        padding: 3rem 0 1rem 0;
+        letter-spacing: 1px;
     }
     
     /* Mobil Responsive */
     @media (max-width: 768px) {
-        .main-title {
-            font-size: 1.8rem;
-        }
+        .brand-logo { font-size: 1.5rem; }
+        .signal-value { font-size: 2.5rem; }
+        .decision-panel { padding: 1.5rem 1rem; }
+        [data-testid="stMetricValue"] { font-size: 1rem !important; }
         
-        [data-testid="stMetricValue"] {
-            font-size: 1.1rem !important;
-        }
-        
-        .glass-card {
-            padding: 1rem;
-            margin: 0.3rem 0;
+        [data-testid="column"] {
+            padding: 0.25rem !important;
         }
     }
     
-    /* İndikatör Badge'leri */
-    .indicator-badge {
-        display: inline-block;
-        padding: 0.3rem 0.8rem;
-        border-radius: 20px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        margin: 0.2rem;
-    }
-    
-    .badge-bullish {
-        background: rgba(16, 185, 129, 0.15);
-        color: #10b981;
-        border: 1px solid rgba(16, 185, 129, 0.3);
-    }
-    
-    .badge-bearish {
-        background: rgba(239, 68, 68, 0.15);
-        color: #ef4444;
-        border: 1px solid rgba(239, 68, 68, 0.3);
-    }
-    
-    .badge-neutral {
-        background: rgba(251, 191, 36, 0.15);
-        color: #fbbf24;
-        border: 1px solid rgba(251, 191, 36, 0.3);
-    }
-    
-    /* Sinyal Gücü Barı */
-    .signal-bar {
-        height: 8px;
-        border-radius: 4px;
-        background: rgba(255, 255, 255, 0.1);
-        overflow: hidden;
-        margin-top: 0.5rem;
-    }
-    
-    .signal-fill {
-        height: 100%;
-        border-radius: 4px;
-        transition: width 0.5s ease;
+    @media (max-width: 480px) {
+        .signal-value { font-size: 2rem; }
+        .brand-logo { font-size: 1.25rem; letter-spacing: 2px; }
     }
     
     /* Hide Streamlit Elements */
@@ -473,7 +491,7 @@ KISA VE NET YANITLA (Maksimum 5 satır):
 3. Dikkat edilmesi gereken tek şey (1 cümle)
 """
     
-    model = genai.GenerativeModel('gemini-3-pro-preview')
+    model = genai.GenerativeModel('gemini-2.5-flash-preview')
     
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -609,8 +627,12 @@ def create_analysis_chart(data):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Başlık
-st.markdown('<h1 class="main-title">📊 Finansal Analiz Pro</h1>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Gelişmiş Teknik Analiz & Yapay Zeka Destekli Piyasa Yorumu</p>', unsafe_allow_html=True)
+st.markdown('''
+<div class="brand-header">
+    <div class="brand-logo">TRENDER <span>PRO</span></div>
+    <div class="brand-tagline">Teknik Analiz Platformu</div>
+</div>
+''', unsafe_allow_html=True)
 
 # Input Alanı
 col1, col2, col3 = st.columns([1, 2, 1])
@@ -621,10 +643,10 @@ with col2:
             "Hisse Kodu",
             value="THYAO.IS",
             label_visibility="collapsed",
-            placeholder="Hisse Kodu Girin (Örn: GARAN.IS, EREGL.IS)"
+            placeholder="Sembol girin (THYAO.IS, GARAN.IS)"
         )
     with btn_col:
-        analyze_btn = st.button("🔍 Analiz", type="primary", use_container_width=True)
+        analyze_btn = st.button("ANALIZ", type="primary", use_container_width=True)
 
 # Analiz Butonu Tıklandığında
 if analyze_btn:
@@ -632,168 +654,124 @@ if analyze_btn:
         data = get_advanced_data(symbol.upper().strip())
     
     if data:
-        st.markdown("---")
-        
         # ═══ SİNYAL SKORU ═══
         score, signal, signal_color = calculate_signal_score(data)
         
-        # Büyük Sinyal Kartı
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, {signal_color}22 0%, {signal_color}11 100%);
-            border: 2px solid {signal_color};
-            border-radius: 20px;
-            padding: 1.5rem;
-            text-align: center;
-            margin-bottom: 1.5rem;
-        ">
-            <div style="font-size: 3rem; font-weight: 800; color: {signal_color};">{signal}</div>
-            <div style="font-size: 1.5rem; color: rgba(255,255,255,0.8);">Skor: {score}/100</div>
-            <div style="
-                background: rgba(255,255,255,0.1);
-                border-radius: 10px;
-                height: 12px;
-                margin-top: 1rem;
-                overflow: hidden;
-            ">
-                <div style="
-                    width: {score}%;
-                    height: 100%;
-                    background: {signal_color};
-                    border-radius: 10px;
-                    transition: width 0.5s ease;
-                "></div>
+        # Karar Paneli - Dopamin Odaklı
+        pulse_class = "pulse-active" if score >= 70 or score <= 30 else ""
+        
+        st.markdown(f'''
+        <div class="decision-panel {pulse_class}" style="--signal-color: {signal_color};">
+            <div class="signal-label">Sinyal</div>
+            <div class="signal-value" style="color: {signal_color};">{signal}</div>
+            <div class="signal-score">Güç: {score}/100</div>
+            <div class="score-bar-container">
+                <div class="score-bar-fill" style="width: {score}%; background: {signal_color};"></div>
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        ''', unsafe_allow_html=True)
         
-        # ═══ KPI METRİKLERİ ═══
-        st.markdown("### 📈 Teknik Göstergeler")
+        # ═══ ANA METRİKLER ═══
+        st.markdown('<div class="section-title">Temel Göstergeler</div>', unsafe_allow_html=True)
         
         kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
         
         # Fiyat
         delta_color = "normal" if data['change_pct'] >= 0 else "inverse"
         kpi1.metric(
-            "💰 Fiyat",
+            "Fiyat",
             f"{data['price']:.2f} ₺",
             f"{data['change_pct']:+.2f}%",
             delta_color=delta_color
         )
         
-        # RSI - daha net açıklama
+        # RSI
         if data['rsi'] > 70:
-            rsi_label = "🔥 Pahalı"
+            rsi_label = "RSI · Pahalı"
             rsi_desc = "Satış baskısı olası"
         elif data['rsi'] < 30:
-            rsi_label = "❄️ Ucuz"
+            rsi_label = "RSI · Ucuz"
             rsi_desc = "Alım fırsatı olası"
         else:
-            rsi_label = "⚖️ Normal"
-            rsi_desc = "Dengeli bölge"
+            rsi_label = "RSI"
+            rsi_desc = "Dengeli"
         kpi2.metric(rsi_label, f"{data['rsi']:.1f}", rsi_desc)
         
-        # MACD - daha net açıklama
-        macd_icon = "🟢" if data['macd_status'] == "AL" else "🔴"
+        # MACD
         macd_desc = "Yukarı momentum" if data['macd_status'] == "AL" else "Aşağı momentum"
-        kpi3.metric(f"MACD {macd_icon}", data['macd_status'], macd_desc)
+        kpi3.metric("MACD", data['macd_status'], macd_desc)
         
-        # ADX - daha net açıklama
-        if data['adx'] > 25:
-            adx_desc = "Trend güçlü"
-        else:
-            adx_desc = "Trend zayıf"
-        kpi4.metric("📊 Trend Gücü", f"{data['adx']:.1f}", adx_desc)
+        # ADX
+        adx_desc = "Trend güçlü" if data['adx'] > 25 else "Trend zayıf"
+        kpi4.metric("Trend Gücü", f"{data['adx']:.1f}", adx_desc)
         
-        # Volatilite - daha net açıklama
+        # Volatilite
         if data['atr_pct'] > 3:
-            vol_desc = "Yüksek oynaklık"
+            vol_desc = "Yüksek risk"
         elif data['atr_pct'] > 1.5:
-            vol_desc = "Normal oynaklık"
+            vol_desc = "Normal"
         else:
-            vol_desc = "Düşük oynaklık"
-        kpi5.metric("⚡ Oynaklık", f"%{data['atr_pct']:.2f}", vol_desc)
+            vol_desc = "Düşük risk"
+        kpi5.metric("Volatilite", f"%{data['atr_pct']:.2f}", vol_desc)
         
         st.markdown("---")
         
-        # ═══ DETAYLI METRİKLER ═══
+        # ═══ DETAY METRİKLER ═══
         col_left, col_right = st.columns(2)
         
         with col_left:
-            st.markdown("### 📊 Momentum Detayları")
+            st.markdown('<div class="section-title">Momentum</div>', unsafe_allow_html=True)
             m1, m2 = st.columns(2)
             
-            # Stoch RSI açıklaması
-            if data['stoch_rsi'] > 80:
-                stoch_desc = "Çok pahalı"
-            elif data['stoch_rsi'] < 20:
-                stoch_desc = "Çok ucuz"
-            else:
-                stoch_desc = "Normal"
+            stoch_desc = "Pahalı" if data['stoch_rsi'] > 80 else "Ucuz" if data['stoch_rsi'] < 20 else "Nötr"
             m1.metric("Stoch RSI", f"{data['stoch_rsi']:.1f}", stoch_desc)
             
-            # Bollinger açıklaması
-            if data['bb_position'] > 80:
-                bb_desc = "Üst bant (tehlike)"
-            elif data['bb_position'] < 20:
-                bb_desc = "Alt bant (fırsat)"
-            else:
-                bb_desc = "Orta bölge"
-            m2.metric("Bollinger %", f"{data['bb_position']:.1f}%", bb_desc)
+            bb_desc = "Üst bant" if data['bb_position'] > 80 else "Alt bant" if data['bb_position'] < 20 else "Orta"
+            m2.metric("Bollinger", f"{data['bb_position']:.1f}%", bb_desc)
             
             m3, m4 = st.columns(2)
-            m3.metric("50G Ortalama", f"{data['sma50']:.2f} ₺", "Kısa vade trend")
-            m4.metric("200G Ortalama", f"{data['sma200']:.2f} ₺" if pd.notna(data['sma200']) else "N/A", "Uzun vade trend")
+            m3.metric("SMA 50", f"{data['sma50']:.2f} ₺", "Kısa vade")
+            m4.metric("SMA 200", f"{data['sma200']:.2f} ₺" if pd.notna(data['sma200']) else "—", "Uzun vade")
         
         with col_right:
-            st.markdown("### 🎯 Kritik Seviyeler")
+            st.markdown('<div class="section-title">Seviyeler</div>', unsafe_allow_html=True)
             s1, s2 = st.columns(2)
             
-            # Direnç mesafesi
             res_dist = ((data['resistance'] - data['price']) / data['price']) * 100
-            s1.metric("Direnç", f"{data['resistance']:.2f} ₺", f"%{res_dist:+.1f} uzaklık")
+            s1.metric("Direnç", f"{data['resistance']:.2f} ₺", f"{res_dist:+.1f}%")
             
-            # Destek mesafesi
             sup_dist = ((data['support'] - data['price']) / data['price']) * 100
-            s2.metric("Destek", f"{data['support']:.2f} ₺", f"%{sup_dist:+.1f} uzaklık")
+            s2.metric("Destek", f"{data['support']:.2f} ₺", f"{sup_dist:+.1f}%")
             
             s3, s4 = st.columns(2)
-            s3.metric("Pivot", f"{data['pivot']:.2f} ₺", "Denge noktası")
+            s3.metric("Pivot", f"{data['pivot']:.2f} ₺", "Denge")
             
-            # Hacim açıklaması
-            if data['volume_ratio'] > 1.5:
-                vol_status = "Yoğun işlem"
-            elif data['volume_ratio'] < 0.5:
-                vol_status = "Düşük işlem"
-            else:
-                vol_status = "Normal işlem"
+            vol_status = "Yoğun" if data['volume_ratio'] > 1.5 else "Düşük" if data['volume_ratio'] < 0.5 else "Normal"
             s4.metric("Hacim", f"{data['volume_ratio']:.2f}x", vol_status)
         
         st.markdown("---")
         
         # ═══ GRAFİK ═══
-        st.markdown("### 📈 Teknik Grafik")
+        st.markdown('<div class="section-title">Teknik Grafik</div>', unsafe_allow_html=True)
         chart = create_analysis_chart(data)
         st.plotly_chart(chart, use_container_width=True)
         
         st.markdown("---")
         
-        # ═══ YAPAY ZEKA ANALİZİ ═══
-        with st.status("🤖 Yapay Zeka Analizi Hazırlanıyor...", expanded=True) as status:
+        # ═══ AI ANALİZİ ═══
+        with st.status("AI Analizi hazırlanıyor...", expanded=True) as status:
             ai_comment = get_ai_analysis(data, score, signal)
             st.markdown(ai_comment)
-            status.update(label="✅ Analiz Tamamlandı", state="complete", expanded=True)
+            status.update(label="Analiz tamamlandı", state="complete", expanded=True)
             
     else:
-        st.error("❌ Veri bulunamadı. Lütfen hisse kodunu kontrol edin.")
-        st.info("💡 **İpucu:** BIST hisseleri için sonuna `.IS` eklemeyi unutmayın. Örnek: `THYAO.IS`, `GARAN.IS`")
+        st.error("Veri bulunamadı. Sembolü kontrol edin.")
+        st.info("BIST hisseleri için .IS ekleyin. Örnek: THYAO.IS")
 
 # Footer
-st.markdown("""
+st.markdown('''
 <div class="footer">
-    <p>📊 Finansal Analiz Pro | Teknik Analiz & AI Yorumu</p>
-    <p style="font-size: 0.7rem; margin-top: 0.5rem;">
-        ⚠️ Bu uygulama yalnızca eğitim amaçlıdır. Yatırım tavsiyesi değildir.
-    </p>
+    TRENDER PRO · Teknik Analiz Platformu
 </div>
-""", unsafe_allow_html=True)
+''', unsafe_allow_html=True)
+
