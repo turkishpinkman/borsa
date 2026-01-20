@@ -88,7 +88,7 @@ def get_ai_signal(data):
     STRATEJİ: [Destek/Direnç mantığına göre kısa bir cümle]
     """
     
-    model = genai.GenerativeModel('gemini-3-pro-preview')
+    model = genai.GenerativeModel('gemini-3-flash-preview')
     
     # Filtreleri Kapat
     safe = [
