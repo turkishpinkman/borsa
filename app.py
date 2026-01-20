@@ -5,39 +5,32 @@ import google.generativeai as genai
 import plotly.graph_objects as go
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(
-    page_title="Borsa Asistanı v2.0",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-st.title("🤖 AI Borsa Asistanı (Lite Versiyon)")
+st.set_page_config(page_title="Borsa Analiz Projesi", layout="wide")
+st.title("📈 Borsa Veri Analiz Simülasyonu")
 
 # --- SIDEBAR ---
-st.sidebar.header("Ayarlar")
-symbol_input = st.sidebar.text_input("Hisse Kodu (Örn: THYAO.IS)", value="THYAO.IS")
-analyze_button = st.sidebar.button("Analiz Et")
+st.sidebar.header("Kontrol Paneli")
+symbol_input = st.sidebar.text_input("Hisse Kodu (Örn: GARAN.IS)", value="GARAN.IS")
+analyze_button = st.sidebar.button("Verileri Getir")
 
-# API Key Kontrolü
+# API Key
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
-    st.error("API Key Eksik! Lütfen Secrets ayarlarını kontrol et.")
+    st.error("API Key Eksik! Streamlit Secrets ayarlarını yapın.")
     st.stop()
 
-# --- 1. FONKSİYON: VERİ ÇEKME (ÖNBELLEKLİ) ---
-# Bu fonksiyon veriyi çeker ve önbelleğe alır. Böylece site donmaz.
-@st.cache_data(ttl=3600) # 1 saat boyunca veriyi hatırla
-def get_stock_data(symbol):
+# --- 1. VERİ ÇEKME FONKSİYONU ---
+@st.cache_data(ttl=300) # 5 dk önbellek
+def get_data(symbol):
     try:
         ticker = yf.Ticker(symbol)
-        # Veri periyodunu biraz kısalttık (daha az RAM kullanımı için)
-        hist = ticker.history(period="6mo")
+        hist = ticker.history(period="3mo") # Veriyi azalttık (Hız için)
         
         if hist.empty:
-            return None, None, "Veri bulunamadı."
+            return None, None, "Hisse bulunamadı. Sonuna .IS eklediniz mi?"
 
-        # Basit İndikatörler
+        # Teknik Hesaplamalar (Basitleştirilmiş)
         # RSI
         delta = hist['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -45,91 +38,99 @@ def get_stock_data(symbol):
         rs = gain / loss
         hist['RSI'] = 100 - (100 / (1 + rs))
         
-        # Ortalamalar
+        # Hareketli Ortalama (50 Günlük)
         hist['SMA50'] = hist['Close'].rolling(window=50).mean()
         
-        # Haberler (Sadece başlıklar, daha hızlı olması için)
-        news_list = ticker.news
-        news_text = ""
-        if news_list:
-            for n in news_list[:3]:
-                news_text += f"- {n.get('title', '')}\n"
-        
         info = ticker.info
-        return hist, info, news_text
         
+        # Haber Başlıkları
+        news = ""
+        if ticker.news:
+            for n in ticker.news[:3]:
+                news += f"- {n.get('title', '')}\n"
+        
+        return hist, info, news
     except Exception as e:
         return None, None, str(e)
 
-# --- 2. FONKSİYON: AI ANALİZİ (ÖNBELLEKLİ) ---
-@st.cache_data(show_spinner=False)
-def get_ai_comment(symbol, price, rsi, trend, news):
-    try:
-        model = genai.GenerativeModel('gemini-3-flash-preview')
-        
-        prompt = f"""
-        Analiz: {symbol}
-        Fiyat: {price:.2f}
-        RSI: {rsi:.2f}
-        Trend: {trend}
-        Haberler: {news}
-        
-        GÖREV:
-        Yatırımcı için bu verileri kısaca yorumla.
-        Teknik olarak alım mı satım mı bölgesinde?
-        Riskler neler?
-        Sonuç: Pozitif/Negatif/Nötr.
-        (Cevabı kısa tut, maksimum 5 cümle.)
-        """
-        
-        # Güvenlik ayarları (Bloklanmayı önlemek için)
-        safe = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
-        
-        response = model.generate_content(prompt, safety_settings=safe)
-        return response.text
-    except Exception as e:
-        return f"AI Hatası: {str(e)}"
-
-# --- ANA AKIŞ ---
-if analyze_button:
-    # 1. Adım: Veri Çekme
-    with st.spinner('Veriler borsadan çekiliyor...'):
-        hist, info, news = get_stock_data(symbol_input)
+# --- 2. AI YORUM FONKSİYONU (GÜVENLİ) ---
+def get_ai_analysis(symbol, price, rsi, trend, news):
+    # Prompt'u "Eğitim" kılıfına sokuyoruz
+    prompt = f"""
+    Rol yap: Sen bir üniversitede finans dersi veren bir profesörsün.
+    Ben de senin öğrencinim. Aşağıdaki borsa verilerini kullanarak bana teknik analizin nasıl yorumlanacağını öğret.
     
+    UYARI: Asla doğrudan "Al" veya "Sat" deme. Sadece verilerin ne anlama geldiğini anlat.
+    Amaç tamamen eğitimdir.
+    
+    VERİLER:
+    - Hisse: {symbol}
+    - Fiyat: {price:.2f}
+    - RSI: {rsi:.2f}
+    - Trend Durumu: {trend}
+    - Haberler: {news}
+    
+    AÇIKLAMA PLANIN:
+    1. Teknik Göstergeler ne anlatıyor? (Aşırı alım/satım var mı?)
+    2. Temel haberler fiyatı nasıl etkileyebilir?
+    3. Teorik olarak bir yatırımcı bu tabloda nelere dikkat etmeli?
+    """
+    
+    model = genai.GenerativeModel('gemini-3-flash-preview')
+    
+    # Tüm güvenlik filtrelerini kapatıyoruz
+    safe = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+    
+    try:
+        response = model.generate_content(prompt, safety_settings=safe)
+        
+        # HATA YAKALAYICI: Cevap boş mu kontrol et
+        if response.candidates and response.candidates[0].content.parts:
+            return response.text
+        else:
+            return "⚠️ Yapay zeka bu hisse için yorum yapmaktan kaçındı (Finansal Filtre). Başka bir hisse deneyin."
+            
+    except Exception as e:
+        return f"Bağlantı Hatası: {str(e)}"
+
+# --- 3. ANA EKRAN ---
+if analyze_button:
+    with st.spinner('Veriler analiz ediliyor...'):
+        hist, info, news = get_data(symbol_input)
+        
     if hist is not None:
-        # Son Değerler
         last_price = hist['Close'].iloc[-1]
         last_rsi = hist['RSI'].iloc[-1]
         sma50 = hist['SMA50'].iloc[-1]
-        trend = "Yükseliş" if last_price > sma50 else "Düşüş"
         
-        # Üst Kartlar
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Fiyat", f"{last_price:.2f}")
-        c2.metric("RSI", f"{last_rsi:.2f}")
-        c3.metric("Trend (50G)", trend)
+        # Trend Hesabı
+        trend = "Yükseliş Trendi (Fiyat > 50 Günlük Ort)" if last_price > sma50 else "Düşüş Trendi (Fiyat < 50 Günlük Ort)"
         
-        # 2. Adım: Grafik (Daha hafif ayarlar)
-        st.subheader("Grafik")
+        # Görselleştirme
+        col1, col2 = st.columns(2)
+        col1.metric("Son Fiyat", f"{last_price:.2f} TL")
+        col2.metric("RSI (Güç)", f"{last_rsi:.2f}")
+        
+        st.write(f"**Sektör:** {info.get('sector', 'Belirsiz')}")
+        
+        # Grafik
         fig = go.Figure()
         fig.add_trace(go.Candlestick(x=hist.index,
                         open=hist['Open'], high=hist['High'],
                         low=hist['Low'], close=hist['Close'], name='Fiyat'))
-        fig.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0)) # Yüksekliği azalttık
+        fig.update_layout(height=350, margin=dict(l=0,r=0,t=20,b=0))
         st.plotly_chart(fig, use_container_width=True)
         
-        # 3. Adım: Yapay Zeka (En son çalışır)
-        st.markdown("---")
-        st.subheader("Yapay Zeka Yorumu")
-        
-        with st.spinner('Yapay zeka düşünüyor...'):
-            comment = get_ai_comment(symbol_input, last_price, last_rsi, trend, news)
-            st.success(comment)
+        # AI Analizi Çağır
+        st.subheader("🎓 Prof. AI Analizi")
+        with st.spinner('Profesör notları hazırlıyor...'):
+            comment = get_ai_analysis(symbol_input, last_price, last_rsi, trend, news)
+            st.info(comment)
             
     else:
-        st.error(f"Veri hatası: {news}")
+        st.error(f"Veri alınamadı: {news}")
