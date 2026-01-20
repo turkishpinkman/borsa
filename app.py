@@ -377,94 +377,104 @@ def get_advanced_data(symbol):
         return None
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 4. YAPAY ZEKA ANALİZ (FİLTRE-DOSTU PROMPT)
+# 4. SİNYAL SKOR HESAPLAMA
 # ═══════════════════════════════════════════════════════════════════════════════
-def get_ai_analysis(data):
-    """Finans filtresine takılmayan gelişmiş prompt metodu"""
+def calculate_signal_score(data):
+    """Teknik verilere göre 0-100 arası sinyal skoru hesapla"""
+    score = 50  # Başlangıç nötr
     
-    # Trend durumu
-    trend_text = "yükseliş" if data['trend_direction'] == "YUKARI" else "düşüş"
-    
-    # RSI durumu
+    # RSI Katkısı (-15 / +15)
     if data['rsi'] < 30:
-        rsi_zone = "aşırı satım bölgesi (dipte)"
+        score += 15  # Aşırı satım = Alım fırsatı
+    elif data['rsi'] < 40:
+        score += 8
     elif data['rsi'] > 70:
-        rsi_zone = "aşırı alım bölgesi (tepe)"
-    else:
-        rsi_zone = "nötr bölge"
+        score -= 15  # Aşırı alım = Satış sinyali
+    elif data['rsi'] > 60:
+        score -= 8
     
-    # BB durumu
+    # MACD Katkısı (-12 / +12)
+    if data['macd_status'] == "AL":
+        score += 12
+        if data['macd_hist'] > 0:
+            score += 3  # Histogram pozitif bonus
+    else:
+        score -= 12
+        if data['macd_hist'] < 0:
+            score -= 3
+    
+    # Trend Katkısı (-10 / +10)
+    if data['trend_direction'] == "YUKARI":
+        score += 10
+    else:
+        score -= 10
+    
+    # Bollinger Pozisyonu (-8 / +8)
     if data['bb_position'] < 20:
-        bb_zone = "alt banda yakın (olası dipte)"
+        score += 8  # Alt bantta = potansiyel alım
     elif data['bb_position'] > 80:
-        bb_zone = "üst banda yakın (olası tepede)"
-    else:
-        bb_zone = "orta bölgede"
+        score -= 8  # Üst bantta = potansiyel satış
     
-    # ADX yorumu
+    # Hacim Katkısı (-5 / +5)
+    if data['volume_ratio'] > 1.5 and data['obv_trend'] == "YUKARI":
+        score += 5
+    elif data['volume_ratio'] > 1.5 and data['obv_trend'] == "AŞAĞI":
+        score -= 5
+    
+    # ADX Trend Gücü (±5)
     if data['adx'] > 25:
-        adx_text = "güçlü trend mevcut"
+        if data['trend_direction'] == "YUKARI":
+            score += 5
+        else:
+            score -= 5
+    
+    # Sınırla
+    score = max(0, min(100, score))
+    
+    # Sinyal belirleme
+    if score >= 70:
+        signal = "GÜÇLÜ AL"
+        color = "#10b981"
+    elif score >= 55:
+        signal = "AL"
+        color = "#34d399"
+    elif score <= 30:
+        signal = "GÜÇLÜ SAT"
+        color = "#ef4444"
+    elif score <= 45:
+        signal = "SAT"
+        color = "#f87171"
     else:
-        adx_text = "zayıf/yatay trend"
-        
+        signal = "BEKLE"
+        color = "#fbbf24"
+    
+    return score, signal, color
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. YAPAY ZEKA ANALİZ (FİLTRE-DOSTU KISA PROMPT)
+# ═══════════════════════════════════════════════════════════════════════════════
+def get_ai_analysis(data, score, signal):
+    """Finans filtresine takılmayan kısa ve net prompt"""
+    
     prompt = f"""
-Sen deneyimli bir teknik analiz eğitmenisin. Aşağıdaki sayısal verileri yorumla.
-Bu bir EĞİTİM amaçlı teknik analiz çalışmasıdır.
+Sen bir veri analisti olarak çalışıyorsun. Aşağıdaki sayısal değerleri kısaca yorumla.
 
-SAYISAL VERİLER:
-═══════════════════════════════════════
-📊 TEMEL METRİKLER
-• Mevcut Değer: {data['price']:.2f}
-• Günlük Değişim: %{data['change_pct']:.2f}
-• Genel Eğilim: {trend_text.upper()} (50 periyotluk ortalamaya göre)
+VERİ SETİ:
+• Fiyat: {data['price']:.2f} | Değişim: %{data['change_pct']:+.2f}
+• RSI: {data['rsi']:.1f} | MACD: {data['macd_status']}
+• Bollinger %: {data['bb_position']:.1f} | ADX: {data['adx']:.1f}
+• Trend: {data['trend_direction']} | Hacim: {data['volume_ratio']:.2f}x ortalama
+• Destek: {data['support']:.2f} | Direnç: {data['resistance']:.2f}
+• Hesaplanan Skor: {score}/100 → {signal}
 
-📈 MOMENTUM GÖSTERGELERİ  
-• RSI(14): {data['rsi']:.1f} → {rsi_zone}
-• Stokastik RSI: {data['stoch_rsi']:.1f}
-• MACD Durumu: {data['macd_status']} sinyali aktif
-• MACD Histogram: {data['macd_hist']:.3f}
-
-📉 BANT ANALİZİ
-• Bollinger Pozisyon: %{data['bb_position']:.1f} → {bb_zone}
-• Bant Genişliği: %{data['bb_width']:.2f}
-
-⚡ VOLATİLİTE & TREND GÜCÜ
-• ATR Oranı: %{data['atr_pct']:.2f} (günlük oynaklık)
-• ADX: {data['adx']:.1f} → {adx_text}
-
-📦 HACİM ANALİZİ
-• Hacim/Ortalama: {data['volume_ratio']:.2f}x
-• OBV Trendi: {data['obv_trend']}
-
-🎯 TEKNİK SEVİYELER
-• Direnç Bölgesi: {data['resistance']:.2f}
-• Destek Bölgesi: {data['support']:.2f}
-• Pivot Noktası: {data['pivot']:.2f}
-• R1: {data['r1']:.2f} | S1: {data['s1']:.2f}
-═══════════════════════════════════════
-
-LÜTFEN AŞAĞIDAKI FORMATTA YANITLA:
-
-## 🎯 Teknik Görünüm
-(Genel teknik durumu 2-3 cümleyle özetle. Trend yönü ve momentum birlikteliğini değerlendir.)
-
-## ⚠️ Risk Matrisi  
-(RSI, ADX ve volatiliteye göre risk seviyesini belirle: DÜŞÜK / ORTA / YÜKSEK)
-
-## 📊 Kritik Seviyeler
-(Destek ve direnç seviyelerinin önemini açıkla, yakın pivot noktalarını vurgula)
-
-## 🔮 Senaryo Analizi
-**Pozitif Senaryo:** (Ne olursa yukarı hareket beklenir?)
-**Negatif Senaryo:** (Ne olursa aşağı hareket beklenir?)
-
-## 💡 Dikkat Edilmesi Gerekenler
-(3 madde halinde, bu veriler ışığında izlenmesi gereken noktalar)
+KISA VE NET YANITLA (Maksimum 5 satır):
+1. Mevcut teknik durum özeti (1 cümle)
+2. En kritik seviye ve neden önemli (1 cümle)
+3. Dikkat edilmesi gereken tek şey (1 cümle)
 """
     
-    model = genai.GenerativeModel('gemini-3-flash-preview')
+    model = genai.GenerativeModel('gemini-2.5-flash-preview')
     
-    # Güvenlik ayarları - filtreleri minimize et
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -476,7 +486,7 @@ LÜTFEN AŞAĞIDAKI FORMATTA YANITLA:
         response = model.generate_content(prompt, safety_settings=safety_settings)
         return response.text
     except Exception as e:
-        return f"⚠️ Yapay zeka yanıt veremedi. Hata: {str(e)}"
+        return f"⚠️ Analiz yapılamadı: {str(e)}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 5. GELİŞMİŞ GRAFİK MOTORU
@@ -624,8 +634,41 @@ if analyze_btn:
     if data:
         st.markdown("---")
         
+        # ═══ SİNYAL SKORU ═══
+        score, signal, signal_color = calculate_signal_score(data)
+        
+        # Büyük Sinyal Kartı
+        st.markdown(f"""
+        <div style="
+            background: linear-gradient(135deg, {signal_color}22 0%, {signal_color}11 100%);
+            border: 2px solid {signal_color};
+            border-radius: 20px;
+            padding: 1.5rem;
+            text-align: center;
+            margin-bottom: 1.5rem;
+        ">
+            <div style="font-size: 3rem; font-weight: 800; color: {signal_color};">{signal}</div>
+            <div style="font-size: 1.5rem; color: rgba(255,255,255,0.8);">Skor: {score}/100</div>
+            <div style="
+                background: rgba(255,255,255,0.1);
+                border-radius: 10px;
+                height: 12px;
+                margin-top: 1rem;
+                overflow: hidden;
+            ">
+                <div style="
+                    width: {score}%;
+                    height: 100%;
+                    background: {signal_color};
+                    border-radius: 10px;
+                    transition: width 0.5s ease;
+                "></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
         # ═══ KPI METRİKLERİ ═══
-        st.markdown("### 📈 Temel Göstergeler")
+        st.markdown("### 📈 Teknik Göstergeler")
         
         kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
         
@@ -638,36 +681,38 @@ if analyze_btn:
             delta_color=delta_color
         )
         
-        # RSI
-        rsi_status = "🔥" if data['rsi'] > 70 else "❄️" if data['rsi'] < 30 else "⚖️"
-        kpi2.metric(
-            f"RSI {rsi_status}",
-            f"{data['rsi']:.1f}",
-            "Aşırı Alım" if data['rsi'] > 70 else "Aşırı Satım" if data['rsi'] < 30 else "Nötr"
-        )
+        # RSI - daha net açıklama
+        if data['rsi'] > 70:
+            rsi_label = "🔥 Pahalı"
+            rsi_desc = "Satış baskısı olası"
+        elif data['rsi'] < 30:
+            rsi_label = "❄️ Ucuz"
+            rsi_desc = "Alım fırsatı olası"
+        else:
+            rsi_label = "⚖️ Normal"
+            rsi_desc = "Dengeli bölge"
+        kpi2.metric(rsi_label, f"{data['rsi']:.1f}", rsi_desc)
         
-        # MACD
+        # MACD - daha net açıklama
         macd_icon = "🟢" if data['macd_status'] == "AL" else "🔴"
-        kpi3.metric(
-            f"MACD {macd_icon}",
-            data['macd_status'],
-            f"Hist: {data['macd_hist']:.3f}"
-        )
+        macd_desc = "Yukarı momentum" if data['macd_status'] == "AL" else "Aşağı momentum"
+        kpi3.metric(f"MACD {macd_icon}", data['macd_status'], macd_desc)
         
-        # ADX
-        adx_strength = "Güçlü" if data['adx'] > 25 else "Zayıf"
-        kpi4.metric(
-            "📊 ADX",
-            f"{data['adx']:.1f}",
-            f"Trend: {adx_strength}"
-        )
+        # ADX - daha net açıklama
+        if data['adx'] > 25:
+            adx_desc = "Trend güçlü"
+        else:
+            adx_desc = "Trend zayıf"
+        kpi4.metric("📊 Trend Gücü", f"{data['adx']:.1f}", adx_desc)
         
-        # Volatilite
-        kpi5.metric(
-            "⚡ ATR %",
-            f"{data['atr_pct']:.2f}%",
-            "Günlük Oynaklık"
-        )
+        # Volatilite - daha net açıklama
+        if data['atr_pct'] > 3:
+            vol_desc = "Yüksek oynaklık"
+        elif data['atr_pct'] > 1.5:
+            vol_desc = "Normal oynaklık"
+        else:
+            vol_desc = "Düşük oynaklık"
+        kpi5.metric("⚡ Oynaklık", f"%{data['atr_pct']:.2f}", vol_desc)
         
         st.markdown("---")
         
@@ -675,24 +720,54 @@ if analyze_btn:
         col_left, col_right = st.columns(2)
         
         with col_left:
-            st.markdown("### 📊 Momentum & Trend")
+            st.markdown("### 📊 Momentum Detayları")
             m1, m2 = st.columns(2)
-            m1.metric("Stoch RSI", f"{data['stoch_rsi']:.1f}")
-            m2.metric("Bollinger %", f"{data['bb_position']:.1f}%")
+            
+            # Stoch RSI açıklaması
+            if data['stoch_rsi'] > 80:
+                stoch_desc = "Çok pahalı"
+            elif data['stoch_rsi'] < 20:
+                stoch_desc = "Çok ucuz"
+            else:
+                stoch_desc = "Normal"
+            m1.metric("Stoch RSI", f"{data['stoch_rsi']:.1f}", stoch_desc)
+            
+            # Bollinger açıklaması
+            if data['bb_position'] > 80:
+                bb_desc = "Üst bant (tehlike)"
+            elif data['bb_position'] < 20:
+                bb_desc = "Alt bant (fırsat)"
+            else:
+                bb_desc = "Orta bölge"
+            m2.metric("Bollinger %", f"{data['bb_position']:.1f}%", bb_desc)
             
             m3, m4 = st.columns(2)
-            m3.metric("50 Gün Ort", f"{data['sma50']:.2f} ₺")
-            m4.metric("200 Gün Ort", f"{data['sma200']:.2f} ₺" if pd.notna(data['sma200']) else "N/A")
+            m3.metric("50G Ortalama", f"{data['sma50']:.2f} ₺", "Kısa vade trend")
+            m4.metric("200G Ortalama", f"{data['sma200']:.2f} ₺" if pd.notna(data['sma200']) else "N/A", "Uzun vade trend")
         
         with col_right:
-            st.markdown("### 🎯 Teknik Seviyeler")
+            st.markdown("### 🎯 Kritik Seviyeler")
             s1, s2 = st.columns(2)
-            s1.metric("Direnç", f"{data['resistance']:.2f} ₺", "Son 60 Gün Tepe")
-            s2.metric("Destek", f"{data['support']:.2f} ₺", "Son 60 Gün Dip")
+            
+            # Direnç mesafesi
+            res_dist = ((data['resistance'] - data['price']) / data['price']) * 100
+            s1.metric("Direnç", f"{data['resistance']:.2f} ₺", f"%{res_dist:+.1f} uzaklık")
+            
+            # Destek mesafesi
+            sup_dist = ((data['support'] - data['price']) / data['price']) * 100
+            s2.metric("Destek", f"{data['support']:.2f} ₺", f"%{sup_dist:+.1f} uzaklık")
             
             s3, s4 = st.columns(2)
-            s3.metric("Pivot", f"{data['pivot']:.2f} ₺")
-            s4.metric("Hacim/Ort", f"{data['volume_ratio']:.2f}x")
+            s3.metric("Pivot", f"{data['pivot']:.2f} ₺", "Denge noktası")
+            
+            # Hacim açıklaması
+            if data['volume_ratio'] > 1.5:
+                vol_status = "Yoğun işlem"
+            elif data['volume_ratio'] < 0.5:
+                vol_status = "Düşük işlem"
+            else:
+                vol_status = "Normal işlem"
+            s4.metric("Hacim", f"{data['volume_ratio']:.2f}x", vol_status)
         
         st.markdown("---")
         
@@ -705,7 +780,7 @@ if analyze_btn:
         
         # ═══ YAPAY ZEKA ANALİZİ ═══
         with st.status("🤖 Yapay Zeka Analizi Hazırlanıyor...", expanded=True) as status:
-            ai_comment = get_ai_analysis(data)
+            ai_comment = get_ai_analysis(data, score, signal)
             st.markdown(ai_comment)
             status.update(label="✅ Analiz Tamamlandı", state="complete", expanded=True)
             
