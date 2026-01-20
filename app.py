@@ -462,7 +462,7 @@ LÜTFEN AŞAĞIDAKI FORMATTA YANITLA:
 (3 madde halinde, bu veriler ışığında izlenmesi gereken noktalar)
 """
     
-    model = genai.GenerativeModel('gemini-2.5-flash-preview-05-20')
+    model = genai.GenerativeModel('gemini-2.5-flash-preview')
     
     # Güvenlik ayarları - filtreleri minimize et
     safety_settings = [
