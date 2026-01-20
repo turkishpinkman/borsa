@@ -2,243 +2,149 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 import google.generativeai as genai
-import pandas as pd
 
-# --- 1. SAYFA KONFİGÜRASYONU (İLK SATIR OLMALI) ---
+# --- 1. AYARLAR (EN ÜSTTE OLMALI) ---
 st.set_page_config(
-    page_title="TradeMaster AI Pro",
-    page_icon="💎",
+    page_title="Finansal Analiz Pro",
+    page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed" # Mobilde yer kaplamasın diye kapalı başlar
 )
 
-# --- 2. ÖZEL CSS TASARIMI (ESTETİK İÇİN) ---
-st.markdown("""
-<style>
-    /* Ana arka planı ve metinleri düzenle */
-    .stApp {
-        background-color: #0e1117;
-        color: #fafafa;
-    }
-    /* Metrik kutularını kart gibi yap */
-    div[data-testid="stMetric"] {
-        background-color: #1e2329;
-        border: 1px solid #2b3139;
-        padding: 15px 0px 15px 20px;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-    }
-    /* Butonu özelleştir */
-    div.stButton > button {
-        width: 100%;
-        background-color: #2962ff;
-        color: white;
-        border: none;
-        padding: 10px;
-        border-radius: 5px;
-        font-weight: bold;
-        transition: all 0.3s;
-    }
-    div.stButton > button:hover {
-        background-color: #0039cb;
-        border-color: #0039cb;
-    }
-    /* Başlıkları ortala ve stil ver */
-    h1 {
-        text-align: center;
-        font-family: 'Helvetica Neue', sans-serif;
-        font-weight: 700;
-        background: -webkit-linear-gradient(45deg, #007CF0, #00DFD8);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 30px;
-    }
-    .report-box {
-        background-color: #161b22;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #2962ff;
-        margin-top: 20px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# --- 3. API VE AYARLAR ---
+# --- 2. API KONTROL ---
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
-    st.error("⚠️ API Anahtarı Bulunamadı.")
+    st.error("API Anahtarı eksik.")
     st.stop()
 
-# --- 4. FONKSİYONLAR ---
-@st.cache_data(ttl=300)
-def get_market_data(symbol):
+# --- 3. VERİ MOTORU ---
+@st.cache_data(ttl=120) # 2 dk önbellek
+def get_clean_data(symbol):
     try:
         ticker = yf.Ticker(symbol)
+        # Veriyi çek
         hist = ticker.history(period="6mo")
-        if hist.empty: return None, "Veri Yok"
+        if hist.empty: return None
 
         # Hesaplamalar
+        # RSI
         delta = hist['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         hist['RSI'] = 100 - (100 / (1 + rs))
         
+        # Ortalamalar
         hist['SMA50'] = hist['Close'].rolling(window=50).mean()
         hist['SMA200'] = hist['Close'].rolling(window=200).mean()
         
-        # Son Veriler
+        # Son Veri Noktası
         curr = hist.iloc[-1]
         prev = hist.iloc[-2]
         
-        # Değişim Oranı
-        change_rate = ((curr['Close'] - prev['Close']) / prev['Close']) * 100
-        
-        trend = "YÜKSELİŞ" if curr['Close'] > curr['SMA200'] else "DÜŞÜŞ"
+        # Değişim
+        change_val = curr['Close'] - prev['Close']
+        change_pct = (change_val / prev['Close']) * 100
         
         return {
-            "hist": hist,
+            "df": hist,
             "price": curr['Close'],
-            "change": change_rate,
+            "change_val": change_val,
+            "change_pct": change_pct,
             "rsi": curr['RSI'],
             "sma50": curr['SMA50'],
             "sma200": curr['SMA200'],
-            "trend": trend,
-            "info": ticker.info
-        }, None
-    except Exception as e:
-        return None, str(e)
+            "name": ticker.info.get('shortName', symbol)
+        }
+    except:
+        return None
 
-def get_ai_insight(data):
+def get_market_comment(data):
+    # İsimsiz analiz (Filtreye takılmamak için)
+    trend = "Yükseliş" if data['price'] > data['sma200'] else "Düşüş"
+    
     prompt = f"""
-    Sen kıdemli bir teknik analistsin. Aşağıdaki anonim varlık verilerini (VARLIK X) analiz et.
+    Sen kıdemli bir portföy yöneticisisin. Aşağıdaki teknik verileri yorumla.
+    Asla sohbet etme, direkt sadede gel.
     
     VERİLER:
     - Fiyat: {data['price']:.2f}
-    - RSI: {data['rsi']:.2f}
-    - Trend (200G Ort. göre): {data['trend']}
+    - Trend (200G Ort): {trend}
+    - RSI: {data['rsi']:.2f} (30 altı ucuz, 70 üstü pahalı bölge)
     - 50 Günlük Ort: {data['sma50']:.2f}
     
-    GÖREV:
-    Bu tabloyu teknik açıdan yorumla.
-    
-    ÇIKTI FORMATI:
-    SİNYAL: [POZİTİF / NEGATİF / NÖTR]
-    GÜVEN: [0-100 arası sadece sayı yaz]
-    ANALİZ: [Teknik gerekçeni profesyonel bir dille 2-3 cümlede anlat]
-    STRATEJİ: [Destek/Direnç seviyelerine atıfta bulunarak tek cümlelik strateji]
+    İSTENEN FORMAT (Markdown):
+    **Teknik Görünüm:** (Tek cümlede durum)
+    **Risk Analizi:** (RSI ve ortalamalara göre risk durumu)
+    **Stratejik Yorum:** (Yatırımcı neye dikkat etmeli? Destek/Direnç mantığı)
     """
+    
     model = genai.GenerativeModel('gemini-3-flash-preview')
     safe = [{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
     try:
         response = model.generate_content(prompt, safety_settings=safe)
         return response.text
     except:
-        return "SİNYAL: NÖTR\nGÜVEN: 0\nANALİZ: Bağlantı hatası.\nSTRATEJİ: İşlem yapma."
+        return "Bağlantı sorunu nedeniyle yorum yapılamadı."
 
-# --- 5. ARAYÜZ YAPISI ---
+# --- 4. ARAYÜZ (NATIVE STREAMLIT) ---
 
-# Başlık
-st.markdown("<h1>TradeMaster <span style='font-size:0.5em'>AI</span></h1>", unsafe_allow_html=True)
+# Üst Başlık
+st.title("Piyasa Analiz Paneli")
 
-# Sidebar (Sol Panel)
-with st.sidebar:
-    st.markdown("### ⚙️ Kontrol Paneli")
-    symbol_input = st.text_input("Hisse Kodu", value="THYAO.IS", help="BIST için sonuna .IS ekleyin")
-    analyze_btn = st.button("ANALİZİ BAŞLAT")
-    
-    st.markdown("---")
-    st.info("💡 **İpucu:** Bu sistem 'Hayalet Mod' kullanır. AI, hisse ismini bilmeden sadece matematiğe odaklanır.")
-    st.markdown("---")
-    st.caption("⚠️ **Yasal Uyarı:** Burada üretilen içerik yatırım tavsiyesi değildir. Eğitim amaçlı simülasyondur.")
+# Input Alanı (Ana ekranda üstte dursun, mobilde kolay erişim)
+col_input, col_btn = st.columns([3, 1])
+with col_input:
+    symbol = st.text_input("Hisse Kodu", value="THYAO.IS", label_visibility="collapsed", placeholder="Hisse Kodu (Örn: GARAN.IS)")
+with col_btn:
+    btn = st.button("Analiz Et", type="primary", use_container_width=True)
 
-# Ana Ekran Mantığı
-if analyze_btn:
-    with st.spinner('Piyasa verileri işleniyor...'):
-        data, error = get_market_data(symbol_input)
+if btn:
+    data = get_clean_data(symbol)
     
     if data:
-        # --- A. METRİK KARTLARI ---
-        col1, col2, col3, col4 = st.columns(4)
+        # --- A. ÖZET BİLGİLER (KPI) ---
+        # Mobilde 2 satır, masaüstünde 4 sütun
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         
-        # Renk Belirleme (Yeşil/Kırmızı)
-        delta_color = "normal" if data['change'] >= 0 else "inverse"
-        
-        col1.metric("Son Fiyat", f"{data['price']:.2f} ₺", f"%{data['change']:.2f}", delta_color=delta_color)
-        col2.metric("RSI (14)", f"{data['rsi']:.2f}", "30-70 Bölgesi")
-        col3.metric("Trend", data['trend'], "200 Günlük Ort.")
-        col4.metric("Sektör", data['info'].get('sector', 'Genel'), "BIST")
+        kpi1.metric("Fiyat", f"{data['price']:.2f} ₺", f"{data['change_pct']:.2f}%")
+        kpi2.metric("RSI (14)", f"{data['rsi']:.2f}", "Güç Endeksi")
+        kpi3.metric("50 G. Ort", f"{data['sma50']:.2f} ₺")
+        kpi4.metric("200 G. Ort", f"{data['sma200']:.2f} ₺")
         
         st.markdown("---")
-
-        # --- B. GRAFİK (PRO GÖRÜNÜM) ---
+        
+        # --- B. GRAFİK (TAM EKRAN) ---
+        # Plotly'nin kendi native teması mobilde en iyisidir.
         fig = go.Figure()
         
-        # Mum Grafiği
+        # Mumlar
         fig.add_trace(go.Candlestick(
-            x=data['hist'].index,
-            open=data['hist']['Open'], high=data['hist']['High'],
-            low=data['hist']['Low'], close=data['hist']['Close'],
-            name='Fiyat',
-            increasing_line_color='#00c853', decreasing_line_color='#ff3d00'
+            x=data['df'].index,
+            open=data['df']['Open'], high=data['df']['High'],
+            low=data['df']['Low'], close=data['df']['Close'],
+            name='Fiyat'
         ))
         
-        # Ortalamalar
-        fig.add_trace(go.Scatter(x=data['hist'].index, y=data['hist']['SMA50'], line=dict(color='#2962ff', width=1.5), name='SMA 50'))
-        fig.add_trace(go.Scatter(x=data['hist'].index, y=data['hist']['SMA200'], line=dict(color='#ff9100', width=1.5), name='SMA 200'))
+        # Ortalamalar (Sadece çizgiler)
+        fig.add_trace(go.Scatter(x=data['df'].index, y=data['df']['SMA50'], line=dict(color='orange', width=1), name='50 G. Ort'))
+        fig.add_trace(go.Scatter(x=data['df'].index, y=data['df']['SMA200'], line=dict(color='blue', width=1), name='200 G. Ort'))
         
-        # Grafik Ayarları (Temiz Görünüm)
         fig.update_layout(
-            height=500,
-            margin=dict(l=20, r=20, t=30, b=20),
-            paper_bgcolor='rgba(0,0,0,0)', # Şeffaf
-            plot_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='white'),
-            xaxis_rangeslider_visible=False,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            height=450, # Mobilde ideal yükseklik
+            margin=dict(l=10, r=10, t=30, b=10),
+            xaxis_rangeslider_visible=False, # Alttaki slider mobilde yer kaplar, kapattık
+            legend=dict(orientation="h", y=1, x=0)
         )
         st.plotly_chart(fig, use_container_width=True)
-
-        # --- C. AI ANALİZ RAPORU ---
-        with st.spinner('Yapay Zeka Sinyal Üretiyor...'):
-            ai_text = get_ai_insight(data)
+        
+        # --- C. YAPAY ZEKA RAPORU ---
+        # Expander içine alıyoruz, böylece ekranı hemen kaplamaz, isteyen tıklar okur.
+        with st.status("Yapay Zeka Raporu Hazırlanıyor...", expanded=True) as status:
+            comment = get_market_comment(data)
+            st.markdown(comment)
+            status.update(label="Analiz Tamamlandı", state="complete", expanded=True)
             
-            # AI Çıktısını Parçalama (Parsing)
-            lines = ai_text.split('\n')
-            signal = "NÖTR"
-            confidence = 50
-            analysis = ""
-            
-            for line in lines:
-                if "SİNYAL:" in line: signal = line.replace("SİNYAL:", "").strip()
-                if "GÜVEN:" in line: 
-                    try: confidence = int(line.replace("GÜVEN:", "").strip())
-                    except: confidence = 50
-                if "ANALİZ:" in line: analysis = line.replace("ANALİZ:", "").strip()
-                if "STRATEJİ:" in line: strategy = line.replace("STRATEJİ:", "").strip()
-
-            # Rapor Kutusu Tasarımı
-            st.markdown("### 🧠 AI Teknik Raporu")
-            
-            # Sinyal Rengine Göre Kutu
-            box_color = "#2962ff" # Mavi (Nötr)
-            if "POZİTİF" in signal: box_color = "#00c853" # Yeşil
-            if "NEGATİF" in signal: box_color = "#d50000" # Kırmızı
-            
-            # HTML ile Özel Rapor Alanı
-            st.markdown(f"""
-            <div style="background-color: #161b22; border-radius: 10px; padding: 20px; border-left: 10px solid {box_color};">
-                <h3 style="margin:0; color:{box_color};">{signal}</h3>
-                <p style="color: gray; margin-bottom: 10px;">Algoritmik Güven Skoru: %{confidence}</p>
-                <div style="background-color: #30363d; height: 10px; border-radius: 5px; width: 100%;">
-                    <div style="background-color: {box_color}; height: 100%; border-radius: 5px; width: {confidence}%;"></div>
-                </div>
-                <br>
-                <p style="font-size: 1.1em;"><strong>Analiz:</strong> {analysis}</p>
-                <p style="font-size: 1.1em; color: #aaa;"><strong>Strateji:</strong> {strategy}</p>
-            </div>
-            """, unsafe_allow_html=True)
-
     else:
-        st.error(f"Hata: {error}")
+        st.error("Veri bulunamadı. Lütfen kodu kontrol edin (BIST için .IS ekleyin).")
