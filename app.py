@@ -5,7 +5,7 @@ from plotly.subplots import make_subplots
 import google.generativeai as genai
 import pandas as pd
 import numpy as np
-import optuna
+# import optuna (Kaldırıldı - Native Grid Search kullanılacak)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. SAYFA AYARLARI & PROFESYONEL CSS
@@ -606,23 +606,40 @@ def run_vectorbt_backtest(symbol, rsi_period=14, ema_period=200, rsi_threshold=4
 
 def optimize_strategy(symbol):
     """
-    OPTUNA kullanarak en iyi parametreleri bulur
-    (Genetik Algoritma türevi)
+    Basit Grid Search (Python Native) - Optuna Bağımlılığı Olmadan
+    En iyi parametreleri bulur.
     """
-    def objective(trial):
-        rsi_p = trial.suggest_int('rsi_period', 10, 25)
-        ema_p = trial.suggest_int('ema_period', 50, 250, step=10)
-        rsi_t = trial.suggest_int('rsi_threshold', 30, 50, step=5)
-        
-        result = run_vectorbt_backtest(symbol, rsi_p, ema_p, rsi_t)
-        if result and "total_pnl" in result:
-            return result['total_pnl']
-        return -9999
-
-    study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=10) # Hız için 10 deneme (gerçekte 50-100 olmalı)
+    import itertools
     
-    return study.best_params
+    # Parametre Uzayı
+    rsi_periods = [14, 21]
+    ema_periods = [100, 200]
+    rsi_thresholds = [30, 40]
+    
+    best_score = -float('inf')
+    best_params = {
+        'rsi_period': 14,
+        'ema_period': 200,
+        'rsi_threshold': 40
+    }
+    
+    # Kombinasyonları dene
+    combinations = list(itertools.product(rsi_periods, ema_periods, rsi_thresholds))
+    
+    for rsi_p, ema_p, rsi_t in combinations:
+        result = run_vectorbt_backtest(symbol, rsi_p, ema_p, rsi_t)
+        
+        if result and "total_pnl" in result:
+            pnl = result['total_pnl']
+            if pnl > best_score:
+                best_score = pnl
+                best_params = {
+                    'rsi_period': rsi_p,
+                    'ema_period': ema_p,
+                    'rsi_threshold': rsi_t
+                }
+                
+    return best_params
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4. SİNYAL SKOR HESAPLAMA
@@ -1142,9 +1159,9 @@ if st.session_state.analyzed:
         
         # ═══ OPTİMİZASYON (YENİ) ═══
         st.markdown("---")
-        st.markdown('<div class="section-title">🧬 Strateji Optimizasyonu (Genetik)</div>', unsafe_allow_html=True)
-        if st.button("En İyi Parametreleri Bul (Optuna)", type="secondary", use_container_width=True):
-            with st.spinner("Genetik algoritma en uygun parametreleri arıyor..."):
+        st.markdown('<div class="section-title">🧬 Strateji Optimizasyonu</div>', unsafe_allow_html=True)
+        if st.button("En İyi Parametreleri Bul", type="secondary", use_container_width=True):
+            with st.spinner("En uygun parametreler taranıyor..."):
                 best_params = optimize_strategy(target_symbol.upper().strip())
                 st.success("✅ Optimizasyon Tamamlandı! En yüksek getiri sağlayan ayarlar:")
                 c1, c2, c3 = st.columns(3)
