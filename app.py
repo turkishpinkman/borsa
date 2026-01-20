@@ -414,70 +414,107 @@ def get_advanced_data(symbol):
 # ═══════════════════════════════════════════════════════════════════════════════
 def calculate_smart_score(data):
     """
-    SNIPER STRATEJİSİ:
-    Sadece ana trend YUKARI ise ve düzeltme (pullback) gelmişse AL verir.
-    Düşüş trendinde "ucuz" diye alım yapmaz.
+    SNIPER STRATEJİSİ v2:
+    - ADX filtresi ile yatay piyasada sinyal vermez
+    - ATR ile dinamik stop-loss ve kar al seviyeleri
+    - Trend + Momentum + Akıllı Para kombinasyonu
     """
     score = 0
     reasons = []
-
-    # 1. ANA TREND FİLTRESİ
-    if data['price'] > data['ema200']:
-        score += 25
-        reasons.append("Ana Trend Boğa (+25)")
+    
+    # ═══ ADX TREND GÜCÜ FİLTRESİ ═══
+    # ADX < 20: Trend yok, yatay piyasa - sinyallere güvenme
+    # ADX 20-25: Zayıf trend
+    # ADX > 25: Güçlü trend
+    
+    adx_value = data['adx']
+    is_trending = adx_value > 20
+    is_strong_trend = adx_value > 25
+    
+    if not is_trending:
+        # Yatay piyasa - tüm trend sinyallerinin ağırlığını düşür
+        reasons.append(f"ADX {adx_value:.0f} - Trend Yok (Dikkat)")
+    elif is_strong_trend:
+        reasons.append(f"ADX {adx_value:.0f} - Güçlü Trend")
     else:
-        score -= 25
-        reasons.append("Ana Trend Ayı (-25)")
+        reasons.append(f"ADX {adx_value:.0f} - Zayıf Trend")
 
-    # 2. MOMENTUM (Düzeltme Fırsatı)
+    # 1. ANA TREND FİLTRESİ (ADX ile ağırlıklandırılmış)
     if data['price'] > data['ema200']:
-        if data['rsi'] < 40:
-            score += 20
-            reasons.append("Trend İçi Düzeltme Fırsatı (+20)")
-        elif data['rsi'] > 70:
-            score -= 10
-            reasons.append("Aşırı Isınma (-10)")
+        if is_strong_trend:
+            score += 25
+            reasons.append("Güçlü Boğa Trendi (+25)")
+        elif is_trending:
+            score += 15
+            reasons.append("Zayıf Boğa Trendi (+15)")
+        else:
+            score += 5  # Yatay piyasada düşük ağırlık
+            reasons.append("EMA200 Üstü (+5)")
     else:
-        if data['rsi'] < 40:
-            score -= 10
-            reasons.append("Düşüş Trendinde Zayıflık (-10)")
+        if is_strong_trend:
+            score -= 25
+            reasons.append("Güçlü Ayı Trendi (-25)")
+        elif is_trending:
+            score -= 15
+            reasons.append("Zayıf Ayı Trendi (-15)")
+        else:
+            score -= 5
+            reasons.append("EMA200 Altı (-5)")
 
-    # 3. AKILLI PARA ONAYI (CMF)
+    # 2. MOMENTUM (Sadece trend varken geçerli)
+    if is_trending:
+        if data['price'] > data['ema200']:
+            if data['rsi'] < 40:
+                score += 20
+                reasons.append("Pullback Fırsatı (+20)")
+            elif data['rsi'] > 70:
+                score -= 10
+                reasons.append("Aşırı Isınma (-10)")
+        else:
+            if data['rsi'] < 40:
+                score -= 10
+                reasons.append("Düşen Bıçak (-10)")
+
+    # 3. AKILLI PARA (CMF)
     if data['cmf'] > 0.05:
         score += 15
-        reasons.append("Para Girişi Var (+15)")
+        reasons.append("Para Girişi (+15)")
     elif data['cmf'] < -0.05:
         score -= 15
-        reasons.append("Para Çıkışı Var (-15)")
+        reasons.append("Para Çıkışı (-15)")
 
-    # 4. HACİM PATLAMASI
+    # 4. HACİM
     if data['volume_ratio'] > 1.5:
         if data['change_pct'] > 0:
             score += 10
-            reasons.append("Hacimli Yükselış (+10)")
+            reasons.append("Hacimli Yükseliş (+10)")
         else:
             score -= 10
             reasons.append("Hacimli Düşüş (-10)")
 
-    # 5. MACD KESİŞİMİ
+    # 5. MACD
     if data['macd'] > data['macd_signal']:
         score += 10
-        reasons.append("MACD Pozitif (+10)")
     else:
         score -= 10
-        reasons.append("MACD Negatif (-10)")
 
     # 6. BOLLINGER SIKIŞMASI
     if data['bb_width'] < 10:
-        reasons.append("Fiyat Sıkışması (Patlama Yakın)")
+        reasons.append("Sıkışma (Patlama Yakın)")
         if data['trend_direction'] == "YUKARI":
             score += 5
         else:
             score -= 5
 
-    # NORMALİZASYON (0-100)
+    # NORMALİZASYON
     final_score = 50 + score
     final_score = max(0, min(100, final_score))
+
+    # ═══ YATAY PİYASA KORUMASI ═══
+    # ADX < 20 ise ve skor 40-60 arasındaysa BEKLE'ye zorla
+    if not is_trending and 35 < final_score < 65:
+        final_score = 50
+        reasons.append("Yatay Piyasa → Bekle")
 
     # KARAR MEKANİZMASI
     if final_score >= 75:
@@ -496,7 +533,18 @@ def calculate_smart_score(data):
         signal = "BEKLE"
         color = "#fbbf24"
 
-    return final_score, signal, color, reasons
+    # ═══ RİSK SEVİYELERİ (ATR Tabanlı) ═══
+    atr = data['atr']
+    price = data['price']
+    
+    risk_levels = {
+        "stop_loss": price - (2 * atr),      # 2 ATR altı
+        "take_profit_1": price + (1.5 * atr), # 1.5 ATR (konservatif)
+        "take_profit_2": price + (3 * atr),   # 3 ATR (agresif)
+        "risk_reward": 1.5,                   # Risk/Ödül oranı
+    }
+
+    return final_score, signal, color, reasons, risk_levels
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 5. YAPAY ZEKA ANALİZ (FİLTRE-DOSTU KISA PROMPT)
@@ -684,14 +732,20 @@ if analyze_btn:
         data = get_advanced_data(symbol.upper().strip())
     
     if data:
-        # ═══ SİNYAL SKORU (SNIPER ALGORİTMASI) ═══
-        score, signal, signal_color, reasons = calculate_smart_score(data)
+        # ═══ SİNYAL SKORU (SNIPER ALGORİTMASI v2) ═══
+        score, signal, signal_color, reasons, risk_levels = calculate_smart_score(data)
         
-        # Karar Paneli - Dopamin Odaklı
+        # Karar Paneli
         pulse_class = "pulse-active" if score >= 75 or score <= 25 else ""
         
-        # Reasons HTML
-        reasons_html = " · ".join(reasons) if reasons else ""
+        # Reasons HTML (ilk 4 reason)
+        reasons_display = reasons[:4] if len(reasons) > 4 else reasons
+        reasons_html = " · ".join(reasons_display) if reasons_display else ""
+        
+        # Risk seviyeleri
+        sl = risk_levels['stop_loss']
+        tp1 = risk_levels['take_profit_1']
+        tp2 = risk_levels['take_profit_2']
         
         st.markdown(f'''
         <div class="decision-panel {pulse_class}" style="--signal-color: {signal_color};">
@@ -703,6 +757,27 @@ if analyze_btn:
             </div>
             <div style="margin-top: 1rem; font-size: 0.7rem; color: rgba(255,255,255,0.4); letter-spacing: 0.5px;">
                 {reasons_html}
+            </div>
+            <div style="
+                display: flex; 
+                justify-content: center; 
+                gap: 2rem; 
+                margin-top: 1.5rem; 
+                padding-top: 1rem; 
+                border-top: 1px solid rgba(255,255,255,0.06);
+            ">
+                <div style="text-align: center;">
+                    <div style="font-size: 0.6rem; color: rgba(255,255,255,0.3); text-transform: uppercase; letter-spacing: 1px;">Stop Loss</div>
+                    <div style="font-size: 1rem; color: #ef4444; font-weight: 600;">{sl:.2f} ₺</div>
+                </div>
+                <div style="text-align: center;">
+                    <div style="font-size: 0.6rem; color: rgba(255,255,255,0.3); text-transform: uppercase; letter-spacing: 1px;">Hedef 1</div>
+                    <div style="font-size: 1rem; color: #10b981; font-weight: 600;">{tp1:.2f} ₺</div>
+                </div>
+                <div style="text-align: center;">
+                    <div style="font-size: 0.6rem; color: rgba(255,255,255,0.3); text-transform: uppercase; letter-spacing: 1px;">Hedef 2</div>
+                    <div style="font-size: 1rem; color: #10b981; font-weight: 600;">{tp2:.2f} ₺</div>
+                </div>
             </div>
         </div>
         ''', unsafe_allow_html=True)
