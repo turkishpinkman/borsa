@@ -1148,12 +1148,16 @@ def scan_single_stock(symbol):
         
         weekly_data = get_weekly_trend(symbol)
         
+        # Parametreleri güvenli al (KeyError önlemi)
+        p_atr = best_p.get('atr_mult', best_p.get('sl_mult', 2.0))
+        p_threshold = best_p.get('entry_threshold', 65)
+        
         # 3. Skoru hesaplarken optimize edilmiş EŞİK değerlerini kullan
         score, signal, color, reasons, risk_levels = calculate_smart_score(
             data, 
             weekly_data, 
-            atr_mult=best_p['atr_mult'],
-            entry_threshold=best_p['entry_threshold'] # Kişiye özel eşik
+            atr_mult=p_atr,
+            entry_threshold=p_threshold # Kişiye özel eşik
         )
         
         # 4. Filtreleme: Sadece AL veya GÜÇLÜ AL olanları döndür (İsteğe bağlı)
