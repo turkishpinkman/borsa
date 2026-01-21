@@ -524,16 +524,22 @@ def get_weekly_trend(symbol):
 @st.cache_data(ttl=600)
 def run_robust_backtest(symbol):
     """
-    GELİŞMİŞ BACKTEST: Dashboard'daki Smart Score mantığını birebir kullanır.
-    ADX, CMF ve Trend Gücü ile işlem yapar.
+    MATRIX BACKTEST MOTORU (Düzeltilmiş Versiyon)
+    - Ichimoku + EMA Trend Takibi
+    - ATR Trailing Stop (Kârı koruyan mekanizma)
+    - Gereksiz beklemeyi önleyen 'Erken Giriş' mantığı
     """
     try:
-        # 1. Veri Hazırlığı (Analiz fonksiyonundaki indikatörlerin aynısı)
+        # 1. Veri Hazırlığı
         ticker = yf.Ticker(symbol)
         df = ticker.history(period="2y")
         if df.empty or len(df) < 200: return None
         
-        # ─── İndikatör Hesaplamaları (Geçmişe dönük) ───
+        # ─── İndikatör Hesaplamaları ───
+        # EMA & Trend
+        df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean()
+        df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
+        
         # RSI
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -541,15 +547,29 @@ def run_robust_backtest(symbol):
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
         
-        # EMA & Trend
-        df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean()
-        df['SMA50'] = df['Close'].rolling(window=50).mean()
-        
-        # ADX (Trend Gücü - Kritik!)
+        # ATR (Volatilite ve Stop için)
         high_low = df['High'] - df['Low']
         high_close = np.abs(df['High'] - df['Close'].shift())
         low_close = np.abs(df['Low'] - df['Close'].shift())
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = tr.rolling(window=14).mean()
+
+        # ICHIMOKU (Bulut Hesabı)
+        # Conversion Line (Tenkan)
+        nine_period_high = df['High'].rolling(window=9).max()
+        nine_period_low = df['Low'].rolling(window=9).min()
+        df['Tenkan'] = (nine_period_high + nine_period_low) / 2
+        # Base Line (Kijun)
+        period26_high = df['High'].rolling(window=26).max()
+        period26_low = df['Low'].rolling(window=26).min()
+        df['Kijun'] = (period26_high + period26_low) / 2
+        # Span A & B (Geleceğe Shift edilmiş)
+        df['SpanA'] = ((df['Tenkan'] + df['Kijun']) / 2).shift(26)
+        period52_high = df['High'].rolling(window=52).max()
+        period52_low = df['Low'].rolling(window=52).min()
+        df['SpanB'] = ((period52_high + period52_low) / 2).shift(26)
+        
+        # ADX (Trend Gücü)
         plus_dm = df['High'].diff()
         minus_dm = df['Low'].diff()
         plus_dm[plus_dm < 0] = 0
@@ -560,101 +580,100 @@ def run_robust_backtest(symbol):
         dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
         df['ADX'] = dx.rolling(window=14).mean()
 
-        # CMF (Para Akışı)
-        mfv = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / (df['High'] - df['Low'])
-        mfv = mfv.fillna(0)
-        volume_mfv = mfv * df['Volume']
-        df['CMF'] = volume_mfv.rolling(20).sum() / df['Volume'].rolling(20).sum()
-
-        # ATR (Stop Loss için)
-        df['ATR'] = tr.rolling(window=14).mean()
-
         df = df.dropna()
         
-        # 2. Simülasyon Döngüsü
+        # 2. Simülasyon Değişkenleri
         initial_capital = 10000
         cash = initial_capital
         position = 0
-        equity_curve = [initial_capital]
-        
         commission = 0.001 
         
         in_position = False
         trades_count = 0
         wins = 0
         
-        # İndeks bazlı döngü (Hız için .values kullanımı önerilir ama anlaşılırlık için iterrows benzeri yapı)
+        # Hız için numpy dizileri
         opens = df['Open'].values
         closes = df['Close'].values
         highs = df['High'].values
         lows = df['Low'].values
+        dates = df.index
         
-        # İndikatör dizileri
+        # İndikatörler
         ema200 = df['EMA200'].values
-        adx = df['ADX'].values
-        cmf = df['CMF'].values
+        ema50 = df['EMA50'].values
         rsi = df['RSI'].values
         atr = df['ATR'].values
+        span_a = df['SpanA'].values
+        span_b = df['SpanB'].values
+        adx = df['ADX'].values
         
-        stop_loss_price = 0
-        take_profit_price = 0
+        # Stop Takibi
+        trailing_stop_price = 0
+        entry_price = 0
         
-        # Track entry price for calculation check (not explicitly needed for logic but good for safety)
-        entry_price_tracked = 0
-
         for i in range(len(df) - 1):
-            current_equity = cash + (position * closes[i])
-            equity_curve.append(current_equity)
+            # Mevcut fiyatlar
+            current_close = closes[i]
+            current_date = dates[i]
             
-            # ─── ÇIKIŞ MANTIĞI (STOP LOSS & TAKE PROFIT) ───
+            # ─── ÇIKIŞ MANTIĞI (Trailing Stop) ───
             if in_position:
-                # Stop Loss Oldu mu? (Gün içi en düşük fiyat stopu deldi mi?)
-                if lows[i] < stop_loss_price:
-                    exit_price = stop_loss_price # Stop fiyattan çıkış kabul ediyoruz
+                # 1. Stop Kontrolü (Trailing)
+                if lows[i] < trailing_stop_price:
+                    # Stop olduk
+                    exit_price = trailing_stop_price
+                    # Kayma (Slippage) hesabı: Stop fiyatının biraz altından satılır genelde
+                    if opens[i] < trailing_stop_price: exit_price = opens[i] 
+                    
                     cash += position * exit_price * (1 - commission)
+                    if exit_price > entry_price: wins += 1
                     position = 0
                     in_position = False
-                    continue # Döngünün başına dön
+                    continue
                 
-                # Take Profit Oldu mu?
-                elif highs[i] > take_profit_price:
-                    exit_price = take_profit_price
+                # 2. Stop Güncelleme (Fiyat yükseldikçe stopu yukarı çek)
+                # 3 ATR Trailing Stop
+                new_stop = current_close - (3 * atr[i])
+                if new_stop > trailing_stop_price:
+                    trailing_stop_price = new_stop
+                    
+                # 3. Acil Çıkış (Trendin tamamen çökmesi)
+                # Fiyat EMA200'ün %3 altına sarkarsa bekleme kaç
+                if current_close < ema200[i] * 0.97:
+                    exit_price = current_close
                     cash += position * exit_price * (1 - commission)
-                    wins += 1
+                    if exit_price > entry_price: wins += 1
                     position = 0
                     in_position = False
                     continue
 
-                # Trend Bozulduysa veya CMF çöktüyse Acil Çıkış
-                elif closes[i] < ema200[i] * 0.98: # Trend %2 altına sarktı
-                     exit_price = closes[i]
-                     cash += position * exit_price * (1 - commission)
-                     if exit_price > entry_price_tracked: wins += 1
-                     position = 0
-                     in_position = False
-                     continue
-            
-            # ─── GİRİŞ MANTIĞI (SMART SCORE BENZERİ) ───
-            # Analiz sayfasındaki "75 Puan ve Üzeri" mantığını simüle ediyoruz
+            # ─── GİRİŞ MANTIĞI (Daha Agresif Matrix) ───
             if not in_position:
-                score = 50 # Baz puan
+                score = 0
                 
-                # 1. Trend Filtresi
-                if closes[i] > ema200[i]: score += 20
-                else: score -= 20
+                # 1. Ana Trend (En önemli)
+                # Fiyat Bulutun Üstünde mi?
+                cloud_top = max(span_a[i], span_b[i])
+                if current_close > cloud_top: score += 30
                 
-                # 2. ADX (Trend Gücü)
-                if adx[i] > 25: score += 10 # Güçlü trend
-                elif adx[i] < 20: score -= 10 # Yatay piyasa (Girme!)
+                # Fiyat EMA200 Üstünde mi?
+                if current_close > ema200[i]: score += 20
                 
-                # 3. CMF (Para Girişi)
-                if cmf[i] > 0.05: score += 15
+                # 2. Momentum & Güç
+                # ADX > 20 (Trend var)
+                if adx[i] > 20: score += 15
                 
-                # 4. RSI (Pullback Alımı)
-                if closes[i] > ema200[i] and rsi[i] < 45: score += 15 # Yükselen trendde düzeltme
+                # RSI 50 üstü (Boğa bölgesi) ama 70 altı (Aşırı şişmemiş)
+                if 50 < rsi[i] < 70: score += 15
                 
-                # ALIM KARARI (Skor > 75 ise)
-                if score >= 75:
+                # 3. Pullback (Düzeltme) Fırsatı
+                # Trend yukarı ama RSI kısa vadeli düşmüş (Alım fırsatı)
+                if current_close > ema200[i] and rsi[i] < 45: score += 25
+                
+                # ALIM EŞİĞİ: 60 Puan (Daha düşük eşik = Daha çok işlem)
+                # Not: "Mükemmel"i beklemek borsada fırsat kaçırtır. "İyi" yeterlidir.
+                if score >= 60:
                     entry_price = opens[i+1] # Ertesi gün açılıştan al
                     size = cash / entry_price
                     cost = size * entry_price * (1 + commission)
@@ -663,22 +682,15 @@ def run_robust_backtest(symbol):
                     in_position = True
                     trades_count += 1
                     
-                    # Stop Loss & Take Profit Kurulumu (ATR Tabanlı)
-                    current_atr = atr[i]
-                    entry_price_tracked = entry_price
-                    stop_loss_price = entry_price - (2 * current_atr) # 2 ATR Stop
-                    take_profit_price = entry_price + (3 * current_atr) # 3 ATR Hedef
+                    # İlk Stop Seviyesi (3 ATR altı)
+                    trailing_stop_price = entry_price - (3 * atr[i])
                 
         final_value = cash + (position * closes[-1] if in_position else 0)
         total_return = ((final_value - initial_capital) / initial_capital) * 100
-        
-        # Win Rate
         win_rate = (wins / trades_count * 100) if trades_count > 0 else 0
 
         return {
             "total_pnl": total_return,
-            "sharpe_ratio": 0, # Basitleştirildi
-            "max_drawdown": 0, # Basitleştirildi
             "total_trades": trades_count,
             "win_rate": win_rate,
             "final_equity": final_value
