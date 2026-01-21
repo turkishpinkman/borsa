@@ -253,7 +253,7 @@ else:
 # 3. GELİŞMİŞ TEKNİK ANALİZ MOTORU
 # ═══════════════════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=120)
-def get_advanced_data(symbol):
+def get_advanced_data(symbol, rsi_period=14):
     """Gelişmiş teknik analiz verileri"""
     try:
         ticker = yf.Ticker(symbol)
@@ -264,10 +264,10 @@ def get_advanced_data(symbol):
         
         df = hist.copy()
         
-        # ─── RSI (14 Periyot) ───
+        # ─── RSI (Dinamik Periyot) ───
         delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_period).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
         
@@ -512,7 +512,7 @@ def get_weekly_trend(symbol):
 # 3.6 PROFESYONEL BACKTEST (MATRIX ALGORİTMASI v4 - BİREBİR ENTEGRASYON)
 # ═══════════════════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=600)
-def run_robust_backtest(symbol):
+def run_robust_backtest(symbol, rsi_period=14, atr_mult=2.0, entry_threshold=55):
     """
     MATRIX BACKTEST MOTORU v3 (Full Synchronization)
     - Ana analizdeki 'calculate_smart_score' mantığıyla birebir aynı çalışır.
@@ -551,8 +551,8 @@ def run_robust_backtest(symbol):
         
         # RSI
         delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_period).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
         
@@ -682,8 +682,8 @@ def run_robust_backtest(symbol):
                 
                 # 3. İz Süren Stop Güncelleme
                 # Eğer ADX güçlüyse stopu daha agresif takip ettir
-                stop_mult = 2.5 if adx[i] > 30 else 3.0
-                new_stop = current_close - (stop_mult * atr[i])
+                current_stop_mult = atr_mult if adx[i] > 30 else (atr_mult * 0.8)
+                new_stop = current_close - (current_stop_mult * atr[i])
                 if new_stop > trailing_stop_price:
                     trailing_stop_price = new_stop
 
@@ -747,8 +747,12 @@ def run_robust_backtest(symbol):
                 
                 normalized_score = BASE_SCORE + max(-50, min(50, final_raw_score))
                 
-                # İŞLEME GİRİŞ KARARI (Eşik: 60)
-                if normalized_score >= 60:
+                # ADX FILTRESI
+                if adx[i] < 25:
+                    normalized_score -= 25
+
+                # İŞLEME GİRİŞ KARARI (Optimize Edilmiş Eşik)
+                if normalized_score >= entry_threshold:
                     entry_price = opens[i+1]
                     size = cash / entry_price
                     cost = size * entry_price * (1 + commission)
@@ -759,10 +763,10 @@ def run_robust_backtest(symbol):
                     
                     # Risk Yönetimi (Ana analizdeki risk_levels ile uyumlu)
                     # ADX yüksekse volatilite bazlı, düşükse daha geniş stop
-                    stop_mult = 2.5 if adx[i] > 30 else 2.0
+                    current_stop_mult = atr_mult if adx[i] > 30 else (atr_mult * 0.8)
                     
-                    trailing_stop_price = entry_price - (stop_mult * atr[i])
-                    take_profit_price = entry_price + (stop_mult * 3.0 * atr[i]) # Hedef 2 seviyesi
+                    trailing_stop_price = entry_price - (current_stop_mult * atr[i])
+                    take_profit_price = entry_price + (current_stop_mult * 2.0 * atr[i]) # Hedef seviyesi (User Requested Lower)
                 
         final_value = cash + (position * closes[-1] if in_position else 0)
         total_return = ((final_value - initial_capital) / initial_capital) * 100
@@ -785,10 +789,10 @@ def optimize_strategy_robust(symbol):
     best_result = None
     best_pnl = -999
     
-    # Parametre Aralıkları
+    # Parametre Aralıkları (Kullanıcı Talebine Göre Güncel)
     rsi_periods = [10, 14, 21]
-    atr_mults = [2.5, 3.0, 3.5]
-    entry_thresholds = [50, 60, 70]
+    atr_mults = [1.5, 2.0, 2.5]
+    entry_thresholds = [50, 55, 60]
     
     for rsi_p in rsi_periods:
         for atr_m in atr_mults:
@@ -814,7 +818,7 @@ def optimize_strategy_robust(symbol):
                             'best_win_rate': result.get("win_rate", 0)
                         }
     
-    return best_result if best_result else {'rsi_period': 14, 'atr_mult': 3.0, 'entry_threshold': 60}
+    return best_result if best_result else {'rsi_period': 14, 'atr_mult': 2.0, 'entry_threshold': 55}
 
 def run_parametric_backtest(symbol, rsi_period=14, atr_mult=3.0, entry_threshold=60):
     """
@@ -924,6 +928,7 @@ def run_parametric_backtest(symbol, rsi_period=14, atr_mult=3.0, entry_threshold
                 if cmf[i] > 0.10: score += 15
                 if adx[i] > 25: score += 10
                 elif adx[i] > 20: score += 5
+                else: score -= 25 # Strict ADX Filter
                 
                 if score >= entry_threshold:
                     entry_price = opens[i+1]
@@ -944,7 +949,7 @@ def run_parametric_backtest(symbol, rsi_period=14, atr_mult=3.0, entry_threshold
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4. SİNYAL SKOR HESAPLAMA
 # ═══════════════════════════════════════════════════════════════════════════════
-def calculate_smart_score(data, weekly_data=None):
+def calculate_smart_score(data, weekly_data=None, atr_mult=2.0, entry_threshold=55):
     """
     MATRIX ALGORİTMASI v4:
     - Lineer toplama yerine Ağırlıklı Çarpan (Weighted Multiplier) sistemi.
@@ -1059,14 +1064,19 @@ def calculate_smart_score(data, weekly_data=None):
                       (pat_score * W_PATTERN)
                       
     # Normalizasyon (50 taban puana ekle)
-    # Skor çok uçuk çıkabilir, -50 ile +50 arasına sıkıştıracağız
     normalized_score = base_score + max(-50, min(50, final_raw_score))
+
+    # ─── ADX FILTRESI (YATAY PİYASA KORUMASI) ───
+    # ADX < 25 ise trend zayıftır, skoru ciddi şekilde düşür (veya işlemden men et)
+    if data['adx'] < 25:
+        normalized_score -= 25 # Ciddi ceza
+        reasons.append("TREND YOK (ADX < 25)")
     
     # ─── FİNAL KARAR & RENK ───
     if normalized_score >= 80:
         signal = "GÜÇLÜ AL"
         color = "#10b981"
-    elif normalized_score >= 60:
+    elif normalized_score >= entry_threshold: # Optimize Edilmiş Eşik
         signal = "AL"
         color = "#34d399"
     elif normalized_score <= 20:
@@ -1083,13 +1093,13 @@ def calculate_smart_score(data, weekly_data=None):
     atr = data['atr']
     price = data['price']
     
-    # Volatiliteye göre dinamik çarpan
-    stop_mult = 2.5 if data['adx'] > 30 else 2.0
+    # Optimize Edilmiş Çarpan Kullan
+    current_stop_mult = atr_mult if data['adx'] > 30 else (atr_mult * 0.8) # Düşük ADX ise daha dar stop
     
     risk_levels = {
-        "stop_loss": price - (stop_mult * atr),
-        "take_profit_1": price + (stop_mult * 1.5 * atr),
-        "take_profit_2": price + (stop_mult * 3.0 * atr),
+        "stop_loss": price - (current_stop_mult * atr),
+        "take_profit_1": price + (current_stop_mult * 1.5 * atr),
+        "take_profit_2": price + (current_stop_mult * 2.0 * atr), # Hedef küçültüldü
         "risk_reward": 1.5
     }
 
@@ -1364,15 +1374,32 @@ with tab_analiz:
     # Analiz Butonu Tıklandığında
     if st.session_state.analyzed:
         target_symbol = st.session_state.symbol
-        with st.spinner(""):
-            data = get_advanced_data(target_symbol.upper().strip())
+        with st.spinner("Strateji optimize ediliyor..."):
+            # Önce en iyi parametreleri bul
+            best_params = optimize_strategy_robust(target_symbol.upper().strip())
+            
+        with st.spinner("Analiz yapılıyor..."):
+            # Optimize parametrelerle veriyi çek
+            data = get_advanced_data(target_symbol.upper().strip(), rsi_period=best_params['rsi_period'])
             weekly_data = get_weekly_trend(target_symbol.upper().strip())
-            # VectorBT ile Profesyonel Backtest
-            backtest_results = run_robust_backtest(target_symbol.upper().strip())
+            
+            # VectorBT ile Profesyonel Backtest (Optimize parametrelerle)
+            backtest_results = run_robust_backtest(
+                target_symbol.upper().strip(), 
+                rsi_period=best_params['rsi_period'],
+                atr_mult=best_params['atr_mult'],
+                entry_threshold=best_params['entry_threshold']
+            )
         
         if data:
             # ═══ SİNYAL SKORU (SNIPER ALGORİTMASI v3 - Multi-Timeframe) ═══
-            score, signal, signal_color, reasons, risk_levels = calculate_smart_score(data, weekly_data)
+            # Optimize parametreleri kullan
+            score, signal, signal_color, reasons, risk_levels = calculate_smart_score(
+                data, 
+                weekly_data, 
+                atr_mult=best_params['atr_mult'], 
+                entry_threshold=best_params['entry_threshold']
+            )
             
             # Karar Paneli
             pulse_class = "pulse-active" if score >= 75 or score <= 25 else ""
