@@ -508,16 +508,6 @@ def get_weekly_trend(symbol):
         }
     except:
         return None
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3.6 BACKTEST MOTORU
-# ═══════════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3.6 PROFESYONEL BACKTEST & OPTİMİZASYON (VectorBT + Optuna)
-# ═══════════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3.6 PROFESYONEL BACKTEST & OPTİMİZASYON (Pandas Vectorized)
-# ═══════════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3.6 PROFESYONEL BACKTEST & OPTİMİZASYON (Robust Sharpe & Drawdown)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -639,8 +629,8 @@ def run_robust_backtest(symbol):
                     trailing_stop_price = new_stop
                     
                 # 3. Acil Çıkış (Trendin tamamen çökmesi)
-                # Fiyat EMA200'ün %3 altına sarkarsa bekleme kaç
-                if current_close < ema200[i] * 0.97:
+                # Fiyat EMA200'ün %5 altına sarkarsa bekleme kaç (Gevşetilmiş)
+                if current_close < ema200[i] * 0.95:
                     exit_price = current_close
                     cash += position * exit_price * (1 - commission)
                     if exit_price > entry_price: wins += 1
@@ -700,13 +690,167 @@ def run_robust_backtest(symbol):
 
 def optimize_strategy_robust(symbol):
     """
-    Optimizasyon Hedefi: Maksimum Kâr DEĞİL, Maksimum Sharpe Oranı (Güvenilirlik).
-    NOT: Smart Score backtest mantığı sabit parametrelerle çalıştığı için 
-    optimizasyon şimdilik devre dışı bırakılmıştır.
+    GRID SEARCH OPTİMİZASYONU
+    Her hisse için en iyi RSI, ATR ve giriş eşiği kombinasyonunu bulur.
     """
-    # Yeni backtest mantığı parametre kabul etmiyor (Smart Score sabit kurallı),
-    # bu nedenle optimizasyon fonksiyonu şimdilik varsayılan değerleri döndürüyor.
-    return {'rsi_period': 14, 'ema_period': 200, 'rsi_threshold': 40}
+    best_result = None
+    best_pnl = -999
+    
+    # Parametre Aralıkları
+    rsi_periods = [10, 14, 21]
+    atr_mults = [2.5, 3.0, 3.5]
+    entry_thresholds = [50, 60, 70]
+    
+    for rsi_p in rsi_periods:
+        for atr_m in atr_mults:
+            for entry_t in entry_thresholds:
+                result = run_parametric_backtest(
+                    symbol, 
+                    rsi_period=rsi_p, 
+                    atr_mult=atr_m, 
+                    entry_threshold=entry_t
+                )
+                
+                if result and "total_pnl" in result:
+                    # Risk-adjusted skor
+                    adjusted_score = result["total_pnl"] + (result.get("win_rate", 0) * 0.1)
+                    
+                    if adjusted_score > best_pnl:
+                        best_pnl = adjusted_score
+                        best_result = {
+                            'rsi_period': rsi_p,
+                            'atr_mult': atr_m,
+                            'entry_threshold': entry_t,
+                            'best_pnl': result["total_pnl"],
+                            'best_win_rate': result.get("win_rate", 0)
+                        }
+    
+    return best_result if best_result else {'rsi_period': 14, 'atr_mult': 3.0, 'entry_threshold': 60}
+
+def run_parametric_backtest(symbol, rsi_period=14, atr_mult=3.0, entry_threshold=60):
+    """
+    PARAMETRİK BACKTEST - Grid Search için kullanılır
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period="2y")
+        if df.empty or len(df) < 200: return None
+        
+        # İndikatörler
+        df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean()
+        df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
+        df['SMA50'] = df['Close'].rolling(window=50).mean()
+        
+        # RSI (Parametrik)
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_period).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        # ATR
+        high_low = df['High'] - df['Low']
+        high_close = np.abs(df['High'] - df['Close'].shift())
+        low_close = np.abs(df['Low'] - df['Close'].shift())
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = tr.rolling(window=14).mean()
+        
+        # Ichimoku
+        df['Tenkan'] = (df['High'].rolling(9).max() + df['Low'].rolling(9).min()) / 2
+        df['Kijun'] = (df['High'].rolling(26).max() + df['Low'].rolling(26).min()) / 2
+        df['SpanA'] = ((df['Tenkan'] + df['Kijun']) / 2).shift(26)
+        df['SpanB'] = ((df['High'].rolling(52).max() + df['Low'].rolling(52).min()) / 2).shift(26)
+        
+        # ADX
+        plus_dm = df['High'].diff()
+        minus_dm = df['Low'].diff()
+        plus_dm[plus_dm < 0] = 0
+        minus_dm[minus_dm > 0] = 0
+        tr14 = tr.rolling(14).sum()
+        plus_di = 100 * (plus_dm.rolling(14).sum() / tr14)
+        minus_di = 100 * (np.abs(minus_dm).rolling(14).sum() / tr14)
+        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+        df['ADX'] = dx.rolling(14).mean()
+        
+        # CMF
+        mfv = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / (df['High'] - df['Low'])
+        df['CMF'] = (mfv.fillna(0) * df['Volume']).rolling(20).sum() / df['Volume'].rolling(20).sum()
+        
+        df = df.dropna()
+        
+        # Simülasyon
+        cash = 10000
+        position = 0
+        commission = 0.001
+        in_position = False
+        trades = 0
+        wins = 0
+        entry_price = 0
+        trailing_stop = 0
+        
+        closes = df['Close'].values
+        opens = df['Open'].values
+        lows = df['Low'].values
+        ema200 = df['EMA200'].values
+        ema50 = df['EMA50'].values
+        sma50 = df['SMA50'].values
+        rsi = df['RSI'].values
+        atr = df['ATR'].values
+        span_a = df['SpanA'].values
+        span_b = df['SpanB'].values
+        adx = df['ADX'].values
+        cmf = df['CMF'].values
+        
+        for i in range(len(df) - 1):
+            c = closes[i]
+            
+            if in_position:
+                if lows[i] < trailing_stop:
+                    exit_p = trailing_stop if opens[i] >= trailing_stop else opens[i]
+                    cash += position * exit_p * (1 - commission)
+                    if exit_p > entry_price: wins += 1
+                    position = 0
+                    in_position = False
+                    continue
+                
+                new_stop = c - (atr_mult * atr[i])
+                if new_stop > trailing_stop: trailing_stop = new_stop
+                
+                if c < ema200[i] * 0.95:
+                    cash += position * c * (1 - commission)
+                    if c > entry_price: wins += 1
+                    position = 0
+                    in_position = False
+                    continue
+            
+            if not in_position:
+                score = 0
+                cloud_top = max(span_a[i], span_b[i]) if span_a[i] > 0 else 0
+                
+                # calculate_smart_score ile SENKRON
+                if c > cloud_top > 0: score += 15
+                if ema50[i] > ema200[i] and c > ema50[i]: score += 10
+                elif ema50[i] > ema200[i]: score += 5
+                if c > sma50[i] and rsi[i] < 40: score += 25
+                if cmf[i] > 0.10: score += 15
+                if adx[i] > 25: score += 10
+                elif adx[i] > 20: score += 5
+                
+                if score >= entry_threshold:
+                    entry_price = opens[i+1]
+                    position = cash / entry_price
+                    cash -= position * entry_price * (1 + commission)
+                    in_position = True
+                    trades += 1
+                    trailing_stop = entry_price - (atr_mult * atr[i])
+        
+        final = cash + (position * closes[-1] if in_position else 0)
+        pnl = ((final - 10000) / 10000) * 100
+        wr = (wins / trades * 100) if trades > 0 else 0
+        
+        return {"total_pnl": pnl, "total_trades": trades, "win_rate": wr, "final_equity": final}
+    except:
+        return None
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4. SİNYAL SKOR HESAPLAMA
