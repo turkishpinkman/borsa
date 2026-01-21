@@ -524,7 +524,7 @@ def backtest_engine(symbol, strategy_type, params):
         # Parametreleri Al (Yoksa varsayılanı kullan)
         rsi_p = params.get('rsi_period', 14)
         atr_m = params.get('atr_mult', 2.0)
-        sl_mult = params.get('sl_mult', 2.0)
+        sl_mult = params.get('atr_mult', 2.0)
 
         # ─── İndikatörler (Dinamik) ───
         close = df['Close']
@@ -671,9 +671,9 @@ def find_best_strategy(symbol):
     # Parametre Kombinasyonları (Grid)
     # Hem stratejiyi hem de ayarları deniyoruz.
     param_grid = [
-        {'rsi_period': 14, 'sl_mult': 2.5}, # Standart
-        {'rsi_period': 21, 'sl_mult': 3.0}, # Ağır hisseler (ENKAI, EREGL vb.)
-        {'rsi_period': 9,  'sl_mult': 2.0}, # Hızlı hisseler
+        {'rsi_period': 14, 'atr_mult': 2.5, 'entry_threshold': 65}, # Standart
+        {'rsi_period': 21, 'atr_mult': 3.0, 'entry_threshold': 60}, # Ağır hisseler
+        {'rsi_period': 9,  'atr_mult': 2.0, 'entry_threshold': 70}, # Hızlı hisseler
     ]
     
     best_result = None
@@ -1148,16 +1148,12 @@ def scan_single_stock(symbol):
         
         weekly_data = get_weekly_trend(symbol)
         
-        # Parametreleri güvenli al (KeyError önlemi)
-        p_atr = best_p.get('atr_mult', best_p.get('sl_mult', 2.0))
-        p_threshold = best_p.get('entry_threshold', 65)
-        
         # 3. Skoru hesaplarken optimize edilmiş EŞİK değerlerini kullan
         score, signal, color, reasons, risk_levels = calculate_smart_score(
             data, 
             weekly_data, 
-            atr_mult=p_atr,
-            entry_threshold=p_threshold # Kişiye özel eşik
+            atr_mult=best_p['atr_mult'],
+            entry_threshold=best_p['entry_threshold'] # Kişiye özel eşik
         )
         
         # 4. Filtreleme: Sadece AL veya GÜÇLÜ AL olanları döndür (İsteğe bağlı)
