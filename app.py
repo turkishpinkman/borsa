@@ -5,67 +5,7 @@ from plotly.subplots import make_subplots
 import google.generativeai as genai
 import pandas as pd
 import numpy as np
-import time
-from requests import Session
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 # import optuna (Kaldırıldı - Native Grid Search kullanılacak)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# RATE LIMIT TOLERANSLI VERİ ÇEKME
-# ═══════════════════════════════════════════════════════════════════════════════
-def get_yf_session():
-    """Rate limit'e dayanıklı session oluşturur"""
-    session = Session()
-    retries = Retry(
-        total=5,
-        backoff_factor=1,  # 1s, 2s, 4s, 8s, 16s
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS"]
-    )
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
-
-def fetch_stock_data(symbol, period="1y", interval="1d", max_retries=3):
-    """
-    Rate limit toleranslı veri çekme fonksiyonu.
-    yfinance hatalarında otomatik bekleme ve yeniden deneme yapar.
-    """
-    session = get_yf_session()
-    
-    for attempt in range(max_retries):
-        try:
-            ticker = yf.Ticker(symbol, session=session)
-            hist = ticker.history(period=period, interval=interval)
-            
-            if hist.empty:
-                # Boş veri durumunda kısa bekleme
-                if attempt < max_retries - 1:
-                    time.sleep(2)
-                    continue
-                return None, None
-            
-            return ticker, hist
-            
-        except Exception as e:
-            error_msg = str(e).lower()
-            
-            # Rate limit hatası kontrolü
-            if "rate" in error_msg or "too many" in error_msg or "429" in error_msg:
-                wait_time = (attempt + 1) * 5  # 5s, 10s, 15s
-                if attempt < max_retries - 1:
-                    time.sleep(wait_time)
-                    continue
-            
-            # Son deneme başarısızsa hata döndür
-            if attempt == max_retries - 1:
-                return None, None
-            
-            time.sleep(2)
-    
-    return None, None
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. SAYFA AYARLARI & PROFESYONEL CSS
@@ -316,9 +256,10 @@ else:
 def get_advanced_data(symbol):
     """Gelişmiş teknik analiz verileri"""
     try:
-        ticker, hist = fetch_stock_data(symbol, period="1y")
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="1y")  # 1 yıllık veri
         
-        if hist is None or hist.empty or len(hist) < 50:
+        if hist.empty or len(hist) < 50:
             return None
         
         df = hist.copy()
@@ -531,9 +472,10 @@ def get_advanced_data(symbol):
 def get_weekly_trend(symbol):
     """Haftalık zaman diliminde trend analizi"""
     try:
-        ticker, weekly = fetch_stock_data(symbol, period="2y", interval="1wk")
+        ticker = yf.Ticker(symbol)
+        weekly = ticker.history(period="2y", interval="1wk")
         
-        if weekly is None or weekly.empty or len(weekly) < 20:
+        if weekly.empty or len(weekly) < 20:
             return None
         
         # EMA hesaplamaları
@@ -589,9 +531,10 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0):
     - Tüm indikatörleri hesaplar ve simülasyonu çalıştırır.
     """
     try:
-        # 1. Veri Hazırlığı (Rate limit toleranslı)
-        ticker, df = fetch_stock_data(symbol, period="2y")
-        if df is None or df.empty or len(df) < 200: return None
+        # 1. Veri Hazırlığı
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period="2y")
+        if df.empty or len(df) < 200: return None
         
         # ─── İndikatör Hesaplamaları ───
         closes = df['Close']
