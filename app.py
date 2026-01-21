@@ -946,7 +946,79 @@ def create_analysis_chart(data):
     return fig
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 6. ANA ARAYÜZ
+# 6. BIST HİSSE LİSTESİ & MARKET SCANNER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# BIST'teki ana hisseler (BIST-30 ve seçili BIST-100 hisseleri)
+BIST_STOCKS = [
+    # BIST-30
+    "AKBNK.IS", "ARCLK.IS", "ASELS.IS", "BIMAS.IS", "EKGYO.IS",
+    "EREGL.IS", "FROTO.IS", "GARAN.IS", "GUBRF.IS", "HEKTS.IS",
+    "ISCTR.IS", "KCHOL.IS", "KOZAA.IS", "KOZAL.IS", "KRDMD.IS",
+    "MGROS.IS", "ODAS.IS", "OYAKC.IS", "PETKM.IS", "PGSUS.IS",
+    "SAHOL.IS", "SASA.IS", "SISE.IS", "TAVHL.IS", "TCELL.IS",
+    "THYAO.IS", "TKFEN.IS", "TOASO.IS", "TTKOM.IS", "TUPRS.IS",
+    "VESTL.IS", "YKBNK.IS",
+    # Ek Popüler Hisseler
+    "AEFES.IS", "AKSA.IS", "ALARK.IS", "ALFAS.IS", "ANHYT.IS",
+    "AYGAZ.IS", "BRISA.IS", "CCOLA.IS", "CEMAS.IS", "DOHOL.IS",
+    "EGEEN.IS", "ENKAI.IS", "GESAN.IS", "GOLTS.IS", "ISGYO.IS",
+    "ISMEN.IS", "KARTN.IS", "KERVT.IS", "KLRHO.IS", "KONTR.IS",
+    "LOGO.IS", "MAVI.IS", "MPARK.IS", "NETAS.IS", "OTKAR.IS",
+    "PAPIL.IS", "POLHO.IS", "QUAGR.IS", "SDTTR.IS", "SELEC.IS",
+    "SKBNK.IS", "SMRTG.IS", "SOKM.IS", "TATGD.IS", "TMSN.IS",
+    "TRGYO.IS", "TSKB.IS", "TTRAK.IS", "TUKAS.IS", "TURSG.IS",
+    "ULKER.IS", "VAKBN.IS", "VESBE.IS", "YATAS.IS", "ZOREN.IS"
+]
+
+@st.cache_data(ttl=60, show_spinner=False)
+def scan_single_stock(symbol):
+    """Tek bir hisseyi tarar ve sonucu döndürür"""
+    try:
+        data = get_advanced_data(symbol)
+        if data is None:
+            return None
+        
+        weekly_data = get_weekly_trend(symbol)
+        score, signal, color, reasons, risk_levels = calculate_smart_score(data, weekly_data)
+        
+        return {
+            "Sembol": symbol.replace(".IS", ""),
+            "Fiyat": data['price'],
+            "Değişim %": data['change_pct'],
+            "Sinyal": signal,
+            "Skor": score,
+            "RSI": data['rsi'],
+            "ADX": data['adx'],
+            "CMF": data['cmf'],
+            "Trend": data['trend_direction'],
+            "Hacim": data['volume_ratio'],
+            "_color": color,
+            "_score": score
+        }
+    except:
+        return None
+
+def scan_market(stock_list, progress_callback=None):
+    """Tüm hisseleri tarar ve sonuçları skor sırasına göre döndürür"""
+    results = []
+    total = len(stock_list)
+    
+    for i, symbol in enumerate(stock_list):
+        if progress_callback:
+            progress_callback((i + 1) / total, f"Taraniyor: {symbol.replace('.IS', '')} ({i+1}/{total})")
+        
+        result = scan_single_stock(symbol)
+        if result:
+            results.append(result)
+    
+    # Skora göre sırala (yüksekten düşüğe)
+    results.sort(key=lambda x: x['_score'], reverse=True)
+    
+    return results
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. ANA ARAYÜZ
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Başlık
@@ -957,61 +1029,68 @@ st.markdown('''
 </div>
 ''', unsafe_allow_html=True)
 
-# Input Alanı
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    input_col, btn_col = st.columns([3, 1])
-    with input_col:
-        symbol = st.text_input(
-            "Hisse Kodu",
-            value="THYAO.IS",
-            label_visibility="collapsed",
-            placeholder="Sembol girin (THYAO.IS, GARAN.IS)"
-        )
-    with btn_col:
-        analyze_click = st.button("ANALIZ", type="primary", use_container_width=True)
+# Mod Seçimi (Tabs)
+tab_analiz, tab_scanner = st.tabs(["📊 Hisse Analizi", "🔍 Piyasa Tarayıcı"])
 
-if 'analyzed' not in st.session_state:
-    st.session_state.analyzed = False
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 1: TEK HİSSE ANALİZİ
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_analiz:
+    # Input Alanı
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        input_col, btn_col = st.columns([3, 1])
+        with input_col:
+            symbol = st.text_input(
+                "Hisse Kodu",
+                value="THYAO.IS",
+                label_visibility="collapsed",
+                placeholder="Sembol girin (THYAO.IS, GARAN.IS)"
+            )
+        with btn_col:
+            analyze_click = st.button("ANALIZ", type="primary", use_container_width=True)
 
-if analyze_click:
-    st.session_state.analyzed = True
-    st.session_state.symbol = symbol
+    if 'analyzed' not in st.session_state:
+        st.session_state.analyzed = False
 
-# Analiz Butonu Tıklandığında
-if st.session_state.analyzed:
-    target_symbol = st.session_state.symbol
-    with st.spinner(""):
-        data = get_advanced_data(target_symbol.upper().strip())
-        weekly_data = get_weekly_trend(target_symbol.upper().strip())
-        # VectorBT ile Profesyonel Backtest
-        backtest_results = run_robust_backtest(target_symbol.upper().strip())
-    
-    if data:
-        # ═══ SİNYAL SKORU (SNIPER ALGORİTMASI v3 - Multi-Timeframe) ═══
-        score, signal, signal_color, reasons, risk_levels = calculate_smart_score(data, weekly_data)
+    if analyze_click:
+        st.session_state.analyzed = True
+        st.session_state.symbol = symbol
+
+    # Analiz Butonu Tıklandığında
+    if st.session_state.analyzed:
+        target_symbol = st.session_state.symbol
+        with st.spinner(""):
+            data = get_advanced_data(target_symbol.upper().strip())
+            weekly_data = get_weekly_trend(target_symbol.upper().strip())
+            # VectorBT ile Profesyonel Backtest
+            backtest_results = run_robust_backtest(target_symbol.upper().strip())
         
-        # Karar Paneli
-        pulse_class = "pulse-active" if score >= 75 or score <= 25 else ""
-        
-        # Reasons HTML (ilk 5 reason)
-        reasons_display = reasons[:5] if len(reasons) > 5 else reasons
-        reasons_html = " · ".join(reasons_display) if reasons_display else ""
-        
-        # Risk seviyeleri
-        sl = risk_levels['stop_loss']
-        tp1 = risk_levels['take_profit_1']
-        tp2 = risk_levels['take_profit_2']
-        
-        # Backtest bilgisi
-        bt_html = ""
-        if backtest_results and backtest_results.get('total_trades', 0) > 0:
-            wr = backtest_results['win_rate']
-            total_pnl = backtest_results['total_pnl']
-            total_trades = backtest_results['total_trades']
-            wr_color = "#10b981" if wr >= 50 else "#ef4444"
-            pnl_color = "#10b981" if total_pnl > 0 else "#ef4444"
-            bt_html = f'''
+        if data:
+            # ═══ SİNYAL SKORU (SNIPER ALGORİTMASI v3 - Multi-Timeframe) ═══
+            score, signal, signal_color, reasons, risk_levels = calculate_smart_score(data, weekly_data)
+            
+            # Karar Paneli
+            pulse_class = "pulse-active" if score >= 75 or score <= 25 else ""
+            
+            # Reasons HTML (ilk 5 reason)
+            reasons_display = reasons[:5] if len(reasons) > 5 else reasons
+            reasons_html = " · ".join(reasons_display) if reasons_display else ""
+            
+            # Risk seviyeleri
+            sl = risk_levels['stop_loss']
+            tp1 = risk_levels['take_profit_1']
+            tp2 = risk_levels['take_profit_2']
+            
+            # Backtest bilgisi
+            bt_html = ""
+            if backtest_results and backtest_results.get('total_trades', 0) > 0:
+                wr = backtest_results['win_rate']
+                total_pnl = backtest_results['total_pnl']
+                total_trades = backtest_results['total_trades']
+                wr_color = "#10b981" if wr >= 50 else "#ef4444"
+                pnl_color = "#10b981" if total_pnl > 0 else "#ef4444"
+                bt_html = f'''
 <div style="margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.06);">
 <div style="font-size: 0.6rem; color: rgba(255,255,255,0.3); text-transform: uppercase; letter-spacing: 1px; text-align: center; margin-bottom: 0.5rem;">2 Yıllık Backtest</div>
 <div style="display: flex; justify-content: center; gap: 1.5rem;">
@@ -1029,8 +1108,8 @@ if st.session_state.analyzed:
 </div>
 </div>
 </div>'''
-        
-        st.markdown(f'''
+            
+            st.markdown(f'''
 <div class="decision-panel {pulse_class}" style="--signal-color: {signal_color};">
 <div class="signal-label">Sinyal</div>
 <div class="signal-value" style="color: {signal_color};">{signal}</div>
@@ -1058,122 +1137,259 @@ if st.session_state.analyzed:
 {bt_html}
 </div>
 ''', unsafe_allow_html=True)
-        
-        # ═══ ANA METRİKLER ═══
-        st.markdown('<div class="section-title">Temel Göstergeler</div>', unsafe_allow_html=True)
-        
-        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-        
-        # Fiyat
-        delta_color = "normal" if data['change_pct'] >= 0 else "inverse"
-        kpi1.metric(
-            "Fiyat",
-            f"{data['price']:.2f} ₺",
-            f"{data['change_pct']:+.2f}%",
-            delta_color=delta_color
+            
+            # ═══ ANA METRİKLER ═══
+            st.markdown('<div class="section-title">Temel Göstergeler</div>', unsafe_allow_html=True)
+            
+            kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+            
+            # Fiyat
+            delta_color = "normal" if data['change_pct'] >= 0 else "inverse"
+            kpi1.metric(
+                "Fiyat",
+                f"{data['price']:.2f} ₺",
+                f"{data['change_pct']:+.2f}%",
+                delta_color=delta_color
+            )
+            
+            # RSI
+            if data['rsi'] > 70:
+                rsi_label = "RSI · Pahalı"
+                rsi_desc = "Satış baskısı olası"
+            elif data['rsi'] < 30:
+                rsi_label = "RSI · Ucuz"
+                rsi_desc = "Alım fırsatı olası"
+            else:
+                rsi_label = "RSI"
+                rsi_desc = "Dengeli"
+            kpi2.metric(rsi_label, f"{data['rsi']:.1f}", rsi_desc)
+            
+            # MACD
+            macd_desc = "Yukarı momentum" if data['macd_status'] == "AL" else "Aşağı momentum"
+            kpi3.metric("MACD", data['macd_status'], macd_desc)
+            
+            # ADX
+            adx_desc = "Trend güçlü" if data['adx'] > 25 else "Trend zayıf"
+            kpi4.metric("Trend Gücü", f"{data['adx']:.1f}", adx_desc)
+            
+            # Volatilite
+            if data['atr_pct'] > 3:
+                vol_desc = "Yüksek risk"
+            elif data['atr_pct'] > 1.5:
+                vol_desc = "Normal"
+            else:
+                vol_desc = "Düşük risk"
+            kpi5.metric("Volatilite", f"%{data['atr_pct']:.2f}", vol_desc)
+            
+            st.markdown("---")
+            
+            # ═══ DETAY METRİKLER ═══
+            col_left, col_right = st.columns(2)
+            
+            with col_left:
+                st.markdown('<div class="section-title">Momentum & Akıllı Para</div>', unsafe_allow_html=True)
+                m1, m2 = st.columns(2)
+                
+                # CMF (Smart Money)
+                if data['cmf'] > 0.05:
+                    cmf_desc = "Para Girişi"
+                elif data['cmf'] < -0.05:
+                    cmf_desc = "Para Çıkışı"
+                else:
+                    cmf_desc = "Nötr"
+                m1.metric("CMF", f"{data['cmf']:.3f}", cmf_desc)
+                
+                bb_desc = "Üst bant" if data['bb_position'] > 80 else "Alt bant" if data['bb_position'] < 20 else "Orta"
+                m2.metric("Bollinger", f"{data['bb_position']:.1f}%", bb_desc)
+                
+                m3, m4 = st.columns(2)
+                m3.metric("EMA 50", f"{data['ema50']:.2f} ₺", "Kısa vade")
+                m4.metric("EMA 200", f"{data['ema200']:.2f} ₺" if pd.notna(data['ema200']) else "—", "Uzun vade")
+            
+            with col_right:
+                st.markdown('<div class="section-title">Seviyeler</div>', unsafe_allow_html=True)
+                s1, s2 = st.columns(2)
+                
+                res_dist = ((data['resistance'] - data['price']) / data['price']) * 100
+                s1.metric("Direnç", f"{data['resistance']:.2f} ₺", f"{res_dist:+.1f}%")
+                
+                sup_dist = ((data['support'] - data['price']) / data['price']) * 100
+                s2.metric("Destek", f"{data['support']:.2f} ₺", f"{sup_dist:+.1f}%")
+                
+                s3, s4 = st.columns(2)
+                s3.metric("Pivot", f"{data['pivot']:.2f} ₺", "Denge")
+                
+                vol_status = "Yoğun" if data['volume_ratio'] > 1.5 else "Düşük" if data['volume_ratio'] < 0.5 else "Normal"
+                s4.metric("Hacim", f"{data['volume_ratio']:.2f}x", vol_status)
+            
+            st.markdown("---")
+            
+            # ═══ GRAFİK ═══
+            st.markdown('<div class="section-title">Teknik Grafik</div>', unsafe_allow_html=True)
+            chart = create_analysis_chart(data)
+            st.plotly_chart(chart, use_container_width=True)
+            
+            st.markdown("---")
+            
+            # ═══ AI ANALİZİ ═══
+            with st.status("AI Analizi hazırlanıyor...", expanded=True) as status:
+                ai_comment = get_ai_analysis(data, score, signal)
+                st.markdown(ai_comment)
+                status.update(label="Analiz tamamlandı", state="complete", expanded=True)
+            
+            # ═══ OPTİMİZASYON (YENİ) ═══
+            st.markdown("---")
+            st.markdown('<div class="section-title">🧬 Strateji Optimizasyonu</div>', unsafe_allow_html=True)
+            if st.button("En İyi Parametreleri Bul", type="secondary", use_container_width=True):
+                with st.spinner("En uygun parametreler taranıyor..."):
+                    best_params = optimize_strategy_robust(target_symbol.upper().strip())
+                    st.success("✅ Optimizasyon Tamamlandı! En yüksek getiri sağlayan ayarlar:")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("RSI Periyodu", best_params.get('rsi_period', 14))
+                    c2.metric("RSI Eşik", best_params.get('rsi_threshold', 40))
+                    c3.metric("EMA Trend", best_params.get('ema_period', 200))
+                    st.info(f"💡 {target_symbol} için bu parametreler geçmişte en yüksek kârlılığı sağladı.")
+                
+        else:
+            st.error("Veri bulunamadı. Sembolü kontrol edin.")
+            st.info("BIST hisseleri için .IS ekleyin. Örnek: THYAO.IS")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 2: PİYASA TARAYICI
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_scanner:
+    st.markdown('''
+    <div style="text-align: center; padding: 1rem 0;">
+        <div style="font-size: 1.2rem; color: white; font-weight: 600; margin-bottom: 0.5rem;">
+            🔍 BIST Piyasa Tarayıcı
+        </div>
+        <div style="font-size: 0.8rem; color: rgba(255,255,255,0.5);">
+            Tüm BIST hisselerini tarayın ve en güçlü sinyalleri bulun
+        </div>
+    </div>
+    ''', unsafe_allow_html=True)
+    
+    # Tarama seçenekleri
+    col_opt1, col_opt2, col_opt3 = st.columns([1, 2, 1])
+    with col_opt2:
+        scan_mode = st.selectbox(
+            "Tarama Modu",
+            ["BIST-30 + Popüler (77 Hisse)", "Sadece BIST-30 (32 Hisse)"],
+            label_visibility="collapsed"
         )
         
-        # RSI
-        if data['rsi'] > 70:
-            rsi_label = "RSI · Pahalı"
-            rsi_desc = "Satış baskısı olası"
-        elif data['rsi'] < 30:
-            rsi_label = "RSI · Ucuz"
-            rsi_desc = "Alım fırsatı olası"
+        scan_button = st.button("🚀 TARAMAYI BAŞLAT", type="primary", use_container_width=True)
+    
+    if scan_button:
+        # Hisse listesini belirle
+        if "BIST-30" in scan_mode and "Popüler" in scan_mode:
+            stocks_to_scan = BIST_STOCKS
         else:
-            rsi_label = "RSI"
-            rsi_desc = "Dengeli"
-        kpi2.metric(rsi_label, f"{data['rsi']:.1f}", rsi_desc)
+            stocks_to_scan = BIST_STOCKS[:32]  # Sadece BIST-30
         
-        # MACD
-        macd_desc = "Yukarı momentum" if data['macd_status'] == "AL" else "Aşağı momentum"
-        kpi3.metric("MACD", data['macd_status'], macd_desc)
+        # Progress bar
+        progress_bar = st.progress(0, text="Tarama başlatılıyor...")
         
-        # ADX
-        adx_desc = "Trend güçlü" if data['adx'] > 25 else "Trend zayıf"
-        kpi4.metric("Trend Gücü", f"{data['adx']:.1f}", adx_desc)
+        def update_progress(progress, text):
+            progress_bar.progress(progress, text=text)
         
-        # Volatilite
-        if data['atr_pct'] > 3:
-            vol_desc = "Yüksek risk"
-        elif data['atr_pct'] > 1.5:
-            vol_desc = "Normal"
+        # Taramayı çalıştır
+        with st.spinner(""):
+            results = scan_market(stocks_to_scan, update_progress)
+        
+        progress_bar.empty()
+        
+        if results:
+            st.success(f"✅ Tarama tamamlandı! {len(results)} hisse analiz edildi.")
+            
+            # Özet istatistikler
+            strong_buy = sum(1 for r in results if r['Sinyal'] == "GÜÇLÜ AL")
+            buy = sum(1 for r in results if r['Sinyal'] == "AL")
+            wait = sum(1 for r in results if r['Sinyal'] == "BEKLE")
+            sell = sum(1 for r in results if r['Sinyal'] == "SAT")
+            strong_sell = sum(1 for r in results if r['Sinyal'] == "GÜÇLÜ SAT")
+            
+            stat1, stat2, stat3, stat4, stat5 = st.columns(5)
+            stat1.metric("🟢 Güçlü Al", strong_buy)
+            stat2.metric("🟩 Al", buy)
+            stat3.metric("🟡 Bekle", wait)
+            stat4.metric("🟧 Sat", sell)
+            stat5.metric("🔴 Güçlü Sat", strong_sell)
+            
+            st.markdown("---")
+            
+            # Sonuç tablosu
+            st.markdown('<div class="section-title">Sinyal Sıralaması (Güçlüden Zayıfa)</div>', unsafe_allow_html=True)
+            
+            # DataFrame oluştur
+            df_results = pd.DataFrame(results)
+            
+            # Görüntüleme için sütunları seç ve formatla
+            display_df = df_results[["Sembol", "Fiyat", "Değişim %", "Sinyal", "Skor", "RSI", "ADX", "Trend", "Hacim"]].copy()
+            display_df["Fiyat"] = display_df["Fiyat"].apply(lambda x: f"{x:.2f} ₺")
+            display_df["Değişim %"] = display_df["Değişim %"].apply(lambda x: f"{x:+.2f}%")
+            display_df["RSI"] = display_df["RSI"].apply(lambda x: f"{x:.1f}")
+            display_df["ADX"] = display_df["ADX"].apply(lambda x: f"{x:.1f}")
+            display_df["Hacim"] = display_df["Hacim"].apply(lambda x: f"{x:.2f}x")
+            
+            # Sinyal renklerini belirle
+            def style_signal(val):
+                color_map = {
+                    "GÜÇLÜ AL": "background-color: #10b981; color: white; font-weight: bold;",
+                    "AL": "background-color: #34d399; color: white;",
+                    "BEKLE": "background-color: #fbbf24; color: black;",
+                    "SAT": "background-color: #f87171; color: white;",
+                    "GÜÇLÜ SAT": "background-color: #ef4444; color: white; font-weight: bold;"
+                }
+                return color_map.get(val, "")
+            
+            def style_skor(val):
+                if val >= 75:
+                    return "background-color: rgba(16, 185, 129, 0.3); color: #10b981; font-weight: bold;"
+                elif val >= 60:
+                    return "background-color: rgba(52, 211, 153, 0.2); color: #34d399;"
+                elif val <= 25:
+                    return "background-color: rgba(239, 68, 68, 0.3); color: #ef4444; font-weight: bold;"
+                elif val <= 40:
+                    return "background-color: rgba(248, 113, 113, 0.2); color: #f87171;"
+                else:
+                    return "background-color: rgba(251, 191, 36, 0.2); color: #fbbf24;"
+            
+            # Styled DataFrame
+            styled_df = display_df.style.applymap(
+                style_signal, subset=["Sinyal"]
+            ).applymap(
+                style_skor, subset=["Skor"]
+            ).set_properties(**{
+                'text-align': 'center',
+                'font-size': '0.85rem'
+            }).set_table_styles([
+                {'selector': 'th', 'props': [('text-align', 'center'), ('font-size', '0.75rem'), ('color', 'rgba(255,255,255,0.6)'), ('text-transform', 'uppercase'), ('letter-spacing', '1px')]},
+                {'selector': 'td', 'props': [('padding', '0.5rem')]},
+            ])
+            
+            st.dataframe(styled_df, use_container_width=True, height=500)
+            
+            # En iyi 5 hisse
+            if len(results) >= 5:
+                st.markdown("---")
+                st.markdown('<div class="section-title">🏆 En Güçlü 5 Sinyal</div>', unsafe_allow_html=True)
+                
+                top5 = results[:5]
+                cols = st.columns(5)
+                for i, stock in enumerate(top5):
+                    with cols[i]:
+                        signal_color = stock['_color']
+                        st.markdown(f'''
+                        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 1rem; text-align: center;">
+                            <div style="font-size: 1.2rem; font-weight: 700; color: white;">{stock['Sembol']}</div>
+                            <div style="font-size: 0.8rem; color: rgba(255,255,255,0.5); margin: 0.25rem 0;">{stock['Fiyat']:.2f} ₺</div>
+                            <div style="font-size: 1.5rem; font-weight: 800; color: {signal_color}; margin: 0.5rem 0;">{stock['Skor']}</div>
+                            <div style="font-size: 0.7rem; color: {signal_color}; font-weight: 600;">{stock['Sinyal']}</div>
+                        </div>
+                        ''', unsafe_allow_html=True)
         else:
-            vol_desc = "Düşük risk"
-        kpi5.metric("Volatilite", f"%{data['atr_pct']:.2f}", vol_desc)
-        
-        st.markdown("---")
-        
-        # ═══ DETAY METRİKLER ═══
-        col_left, col_right = st.columns(2)
-        
-        with col_left:
-            st.markdown('<div class="section-title">Momentum & Akıllı Para</div>', unsafe_allow_html=True)
-            m1, m2 = st.columns(2)
-            
-            # CMF (Smart Money)
-            if data['cmf'] > 0.05:
-                cmf_desc = "Para Girişi"
-            elif data['cmf'] < -0.05:
-                cmf_desc = "Para Çıkışı"
-            else:
-                cmf_desc = "Nötr"
-            m1.metric("CMF", f"{data['cmf']:.3f}", cmf_desc)
-            
-            bb_desc = "Üst bant" if data['bb_position'] > 80 else "Alt bant" if data['bb_position'] < 20 else "Orta"
-            m2.metric("Bollinger", f"{data['bb_position']:.1f}%", bb_desc)
-            
-            m3, m4 = st.columns(2)
-            m3.metric("EMA 50", f"{data['ema50']:.2f} ₺", "Kısa vade")
-            m4.metric("EMA 200", f"{data['ema200']:.2f} ₺" if pd.notna(data['ema200']) else "—", "Uzun vade")
-        
-        with col_right:
-            st.markdown('<div class="section-title">Seviyeler</div>', unsafe_allow_html=True)
-            s1, s2 = st.columns(2)
-            
-            res_dist = ((data['resistance'] - data['price']) / data['price']) * 100
-            s1.metric("Direnç", f"{data['resistance']:.2f} ₺", f"{res_dist:+.1f}%")
-            
-            sup_dist = ((data['support'] - data['price']) / data['price']) * 100
-            s2.metric("Destek", f"{data['support']:.2f} ₺", f"{sup_dist:+.1f}%")
-            
-            s3, s4 = st.columns(2)
-            s3.metric("Pivot", f"{data['pivot']:.2f} ₺", "Denge")
-            
-            vol_status = "Yoğun" if data['volume_ratio'] > 1.5 else "Düşük" if data['volume_ratio'] < 0.5 else "Normal"
-            s4.metric("Hacim", f"{data['volume_ratio']:.2f}x", vol_status)
-        
-        st.markdown("---")
-        
-        # ═══ GRAFİK ═══
-        st.markdown('<div class="section-title">Teknik Grafik</div>', unsafe_allow_html=True)
-        chart = create_analysis_chart(data)
-        st.plotly_chart(chart, use_container_width=True)
-        
-        st.markdown("---")
-        
-        # ═══ AI ANALİZİ ═══
-        with st.status("AI Analizi hazırlanıyor...", expanded=True) as status:
-            ai_comment = get_ai_analysis(data, score, signal)
-            st.markdown(ai_comment)
-            status.update(label="Analiz tamamlandı", state="complete", expanded=True)
-        
-        # ═══ OPTİMİZASYON (YENİ) ═══
-        st.markdown("---")
-        st.markdown('<div class="section-title">🧬 Strateji Optimizasyonu</div>', unsafe_allow_html=True)
-        if st.button("En İyi Parametreleri Bul", type="secondary", use_container_width=True):
-            with st.spinner("En uygun parametreler taranıyor..."):
-                best_params = optimize_strategy_robust(target_symbol.upper().strip())
-                st.success("✅ Optimizasyon Tamamlandı! En yüksek getiri sağlayan ayarlar:")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("RSI Periyodu", best_params.get('rsi_period', 14))
-                c2.metric("RSI Eşik", best_params.get('rsi_threshold', 40))
-                c3.metric("EMA Trend", best_params.get('ema_period', 200))
-                st.info(f"💡 {target_symbol} için bu parametreler geçmişte en yüksek kârlılığı sağladı.")
-            
-    else:
-        st.error("Veri bulunamadı. Sembolü kontrol edin.")
-        st.info("BIST hisseleri için .IS ekleyin. Örnek: THYAO.IS")
+            st.warning("Tarama sonucu bulunamadı. Lütfen tekrar deneyin.")
 
 # Footer
 st.markdown('''
