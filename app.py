@@ -545,7 +545,8 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0):
         # EMA & Trend
         df['EMA200'] = closes.ewm(span=200, adjust=False).mean()
         df['EMA50'] = closes.ewm(span=50, adjust=False).mean()
-        df['SMA50'] = closes.rolling(window=50).mean() # YENİ
+        df['EMA20'] = closes.ewm(span=20, adjust=False).mean()  # YENİ: Erken çıkış için
+        df['SMA50'] = closes.rolling(window=50).mean()
         
         # Değişim
         df['Change_Pct'] = closes.pct_change() * 100 # YENİ
@@ -644,6 +645,7 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0):
         v_bb_width = df['BB_Width'].values
         v_vol_ratio = df['Volume_Ratio'].values
         v_change = df['Change_Pct'].values
+        v_ema20 = df['EMA20'].values  # YENİ: Erken çıkış için
 
         
         # Stop Takibi ve Kar Al
@@ -738,6 +740,43 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0):
                     in_position = False
                     partial_exit_done = False
                     continue
+
+                # 6. ERKEN UYARI: RSI MOMENTUM KAYBI (Önceki bar RSI > 70, şimdiki < 70)
+                if i > 0 and v_rsi[i-1] > 70 and v_rsi[i] < 70:
+                    exit_price = current_close
+                    cash += position * exit_price * (1 - commission)
+                    is_profit = exit_price > entry_price
+                    if is_profit or partial_exit_done: wins += 1
+                    trades.append({
+                        'type': 'exit',
+                        'date': df.index[i],
+                        'price': exit_price,
+                        'profit': is_profit,
+                        'reason': 'RSI Momentum Kaybı'
+                    })
+                    position = 0
+                    in_position = False
+                    partial_exit_done = False
+                    continue
+                
+                # 7. ERKEN UYARI: EMA20 ALTI KAPANIŞ (Kısa vadeli trend kırılması)
+                if current_close < v_ema20[i]:
+                    # Sadece kârdaysak çık (zarar pozisyonunda trailing stop'a bırak)
+                    if current_close > entry_price:
+                        exit_price = current_close
+                        cash += position * exit_price * (1 - commission)
+                        wins += 1  # Kârlı çıkış
+                        trades.append({
+                            'type': 'exit',
+                            'date': df.index[i],
+                            'price': exit_price,
+                            'profit': True,
+                            'reason': 'EMA20 Kırılması'
+                        })
+                        position = 0
+                        in_position = False
+                        partial_exit_done = False
+                        continue
 
             # ─── GİRİŞ MANTIĞI (Unified Score) ───
             if not in_position:
@@ -933,11 +972,11 @@ def calculate_decision_score(data, weekly_data=None):
     elif weekly_data: # Veri var ama Boğa değilse
         trend_score -= 10
 
-    # AŞIRI UZAMA CEZASI (Extension Penalty - Sıkılaştırıldı)
-    if dist_to_ema50 > 8:  # %15 -> %8'e sıkıştırıldı
-        trend_score -= 25  # Daha yüksek ceza
+    # AŞIRI UZAMA CEZASI (Extension Penalty - Agresifleştirildi)
+    if dist_to_ema50 > 20:  # %8 -> %20'e gevşetildi (daha agresif giriş)
+        trend_score -= 25  # Yüksek ceza
         reasons.append("EMA50'den Aşırı Uzak (Riskli)")
-    elif dist_to_ema50 > 5:
+    elif dist_to_ema50 > 15:  # %5 -> %15'e gevşetildi
         trend_score -= 10
         reasons.append("EMA50'den Uzaklaşıyor")
 
@@ -964,14 +1003,14 @@ def calculate_decision_score(data, weekly_data=None):
         mom_score += 25
         reasons.append("Trend İçi Ucuzluk (Pullback)")
     
-    # Aşırı Alım (KILL SWITCH - Sıkılaştırıldı)
-    if rsi > 70:
-        mom_score -= 25  # Daha yüksek ceza (-15 -> -25)
+    # Aşırı Alım (KILL SWITCH - Agresifleştirildi: RSI > 85 olmalı)
+    if rsi > 85:
+        mom_score -= 25  # Sadece RSI > 85'te ceza (70 -> 85)
         if price > bb_upper:
-            mom_score -= 25  # Daha yüksek ceza (-20 -> -25)
+            mom_score -= 25
             reasons.append("Aşırı Alım + BB Dışı (Tehlike!)")
         else:
-            reasons.append("RSI > 70 (Aşırı Alım)")
+            reasons.append("RSI > 85 (Aşırı Alım)")
 
     # 3. TIER: HACİM
     vol_score = 0
@@ -1000,21 +1039,20 @@ def calculate_decision_score(data, weekly_data=None):
                 
     normalized_score = base_score + max(-50, min(50, final_raw))
     
-    # ─── HARD CAP RULES (Aşırı Alım Freni - Sıkılaştırıldı) ───
-    if rsi > 80:
-        normalized_score = min(normalized_score, 50)  # BEKLE sinyali ver (55 -> 50)
-        reasons.append("RSI > 80 (Tehlikeli Bölge)")
-    elif rsi > 75:
-        normalized_score = min(normalized_score, 55)  # Asla 'AL' verme (70 -> 55)
-        reasons.append("RSI > 75 (Aşırı Alım)")
-    elif rsi > 70:
-        normalized_score = min(normalized_score, 65)  # Yeni: RSI > 70 için de fren
-        reasons.append("RSI > 70 (Dikkatli Ol)")
+    # ─── HARD CAP RULES (Aşırı Alım Freni - Agresifleştirildi) ───
+    if rsi > 90:
+        normalized_score = min(normalized_score, 50)  # BEKLE sinyali ver (80 -> 90)
+        reasons.append("RSI > 90 (Tehlikeli Bölge)")
+    elif rsi > 85:
+        normalized_score = min(normalized_score, 60)  # AL eşiğinde kal (75 -> 85)
+        reasons.append("RSI > 85 (Aşırı Alım)")
+    # RSI > 70 ve RSI > 75 cezaları kaldırıldı (daha agresif giriş için)
     
-    # ─── HAFTALIK TREND TEYİDİ (Yeni) ───
+    # ─── HAFTALIK TREND TEYİDİ (Bonus olarak değiştirildi, blok değil) ───
     if weekly_data and weekly_data.get('ema_cross') == "AYI":
-        normalized_score = min(normalized_score, 55)  # Haftalık ayı ise asla AL verme
-        reasons.append("Haftalık Trend AYI (Blok)")
+        # Artık bloklama yok, sadece skor düşürme (bonus sistemine dönüştürüldü)
+        normalized_score = max(0, normalized_score - 15)  # 15 puan ceza, bloklama yok
+        reasons.append("Haftalık Trend AYI (Dikkat)")
         
     return int(normalized_score), reasons
 
