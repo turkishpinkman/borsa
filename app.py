@@ -514,45 +514,49 @@ def get_weekly_trend(symbol):
 @st.cache_data(ttl=600)
 def backtest_engine(symbol, strategy_type, params):
     """
-    Farklı mantıklardaki stratejileri test eden ana motor.
-    strategy_type: 'TREND', 'REVERSION' (Tepki), 'BREAKOUT' (Kırılım)
+    Hem mantığı (Trend/Tepki) hem parametreleri (RSI 9/14/21) test eden motor.
     """
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(period="1y")
         if df.empty or len(df) < 100: return None
 
-        # ─── Ortak İndikatörler ───
+        # Parametreleri Al (Yoksa varsayılanı kullan)
+        rsi_p = params.get('rsi_period', 14)
+        atr_m = params.get('atr_mult', 2.0)
+        sl_mult = params.get('sl_mult', 2.0)
+
+        # ─── İndikatörler (Dinamik) ───
         close = df['Close']
         high = df['High']
         low = df['Low']
         opens = df['Open']
         
-        # RSI
+        # RSI (Dinamik Periyotlu)
         delta = close.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=rsi_p).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_p).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
         
-        # ATR (Volatilite)
+        # ATR
         tr1 = high - low
         tr2 = (high - close.shift()).abs()
         tr3 = (low - close.shift()).abs()
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         df['ATR'] = tr.rolling(14).mean()
         
-        # Hareketli Ortalamalar
+        # Ortalamalar
         df['SMA50'] = close.rolling(50).mean()
         df['EMA200'] = close.ewm(span=200).mean()
         
-        # Bollinger (Kırılım için)
+        # Bollinger
         sma20 = close.rolling(20).mean()
         std20 = close.rolling(20).std()
         df['BB_Upper'] = sma20 + (std20 * 2)
         df['BB_Lower'] = sma20 - (std20 * 2)
         
-        # Hacim Teyidi
+        # Hacim
         df['Vol_SMA'] = df['Volume'].rolling(20).mean()
         
         df = df.dropna()
@@ -564,7 +568,7 @@ def backtest_engine(symbol, strategy_type, params):
         trades = 0
         wins = 0
         
-        # NumPy Hızlandırması
+        # NumPy Dönüşümü
         c_arr = df['Close'].values
         o_arr = df['Open'].values
         l_arr = df['Low'].values
@@ -580,12 +584,11 @@ def backtest_engine(symbol, strategy_type, params):
         
         trailing_stop = 0
         entry_price = 0
-        stop_loss_mult = params.get('sl_mult', 2.0)
         
         for i in range(1, len(df)-1):
             price = c_arr[i]
             
-            # --- ÇIKIŞ MANTIĞI (Ortak) ---
+            # --- ÇIKIŞ ---
             if in_position:
                 # Stop Loss
                 if l_arr[i] <= trailing_stop:
@@ -596,15 +599,13 @@ def backtest_engine(symbol, strategy_type, params):
                     in_position = False
                     continue
                 
-                # Kar Al (Strategy Specific Exit)
+                # Kar Al (Stratejiye Özel)
                 should_exit = False
-                
                 if strategy_type == 'REVERSION':
-                    # Tepki stratejisinde RSI şişince sat (Erken çıkış)
+                    # Tepki stratejisinde RSI şişince sat
                     if rsi_arr[i] > 70: should_exit = True
-                
                 elif strategy_type == 'TREND':
-                    # Trendde fiyat 50 günlüğün altına sarkarsa sat
+                    # Trend bozulursa sat
                     if price < sma50_arr[i] * 0.98: should_exit = True
                     
                 if should_exit:
@@ -614,33 +615,27 @@ def backtest_engine(symbol, strategy_type, params):
                     in_position = False
                     continue
 
-                # Trailing Stop Güncelleme
-                new_stop = price - (stop_loss_mult * atr_arr[i])
+                # Trailing Stop
+                new_stop = price - (sl_mult * atr_arr[i])
                 if new_stop > trailing_stop: trailing_stop = new_stop
             
-            # --- GİRİŞ MANTIĞI (Farklılaşan Kısım) ---
+            # --- GİRİŞ ---
             else:
                 signal = False
                 
-                # 1. TREND STRATEJİSİ (Klasik)
-                # Fiyat > SMA50 > EMA200 ve RSI makul seviyede
                 if strategy_type == 'TREND':
+                    # Trend (RSI periyodu artık dinamik)
                     if (price > sma50_arr[i] and 
                         sma50_arr[i] > ema200_arr[i] and 
                         rsi_arr[i] < 70 and rsi_arr[i] > 40):
                         signal = True
                 
-                # 2. REVERSION (TEPKİ) STRATEJİSİ (Yatay Piyasa)
-                # Fiyat Bollinger Alt Bandında veya RSI < 30 (Aşırı Satım)
                 elif strategy_type == 'REVERSION':
                     if (rsi_arr[i] < 35 and price < bb_low_arr[i] * 1.02):
                         signal = True
                         
-                # 3. BREAKOUT (KIRILIM) STRATEJİSİ (Agresif)
-                # Bollinger Üst Bandı Hacimli Kırılırsa
                 elif strategy_type == 'BREAKOUT':
-                    if (price > bb_up_arr[i] and 
-                        vol_arr[i] > vol_sma_arr[i] * 1.5):
+                    if (price > bb_up_arr[i] and vol_arr[i] > vol_sma_arr[i] * 1.5):
                         signal = True
                 
                 if signal:
@@ -650,10 +645,8 @@ def backtest_engine(symbol, strategy_type, params):
                     position = size
                     in_position = True
                     trades += 1
-                    # İlk Stop Seviyesi
-                    trailing_stop = entry_price - (stop_loss_mult * atr_arr[i])
+                    trailing_stop = entry_price - (sl_mult * atr_arr[i])
 
-        # Sonuç Hesaplama
         equity = cash + (position * c_arr[-1] if in_position else 0)
         pnl = ((equity - 10000) / 10000) * 100
         win_rate = (wins / trades * 100) if trades > 0 else 0
@@ -663,6 +656,7 @@ def backtest_engine(symbol, strategy_type, params):
             "win_rate": win_rate,
             "trades": trades,
             "strategy": strategy_type,
+            "params": params,
             "equity": equity
         }
     except:
@@ -670,33 +664,49 @@ def backtest_engine(symbol, strategy_type, params):
 
 def find_best_strategy(symbol):
     """
-    Bir hisse için hangi yöntemin (Trend, Tepki, Kırılım) çalıştığını bulur.
+    Her hisse için EN İYİ stratejiyi VE parametreleri bulur.
     """
     strategies = ['TREND', 'REVERSION', 'BREAKOUT']
+    
+    # Parametre Kombinasyonları (Grid)
+    # Hem stratejiyi hem de ayarları deniyoruz.
+    param_grid = [
+        {'rsi_period': 14, 'sl_mult': 2.5}, # Standart
+        {'rsi_period': 21, 'sl_mult': 3.0}, # Ağır hisseler (ENKAI, EREGL vb.)
+        {'rsi_period': 9,  'sl_mult': 2.0}, # Hızlı hisseler
+    ]
+    
     best_result = None
     best_score = -9999
     
-    # Tüm yöntemleri dene
+    # 3 Strateji x 3 Parametre = 9 Test (Hisse başı)
     for strat in strategies:
-        # Basit parametre seti
-        res = backtest_engine(symbol, strat, params={'sl_mult': 2.5})
-        
-        if res:
-            # Puanlama: PnL + (WinRate * 0.3)
-            # Çok az işlem yapanı (trades < 5) ciddiye alma
-            score = res['pnl'] + (res['win_rate'] * 0.3)
-            if res['trades'] < 3: score -= 50
+        for p in param_grid:
+            res = backtest_engine(symbol, strat, params=p)
             
-            if score > best_score:
-                best_score = score
-                best_result = res
+            if res:
+                # Skorlama: PnL + (WinRate * 0.4)
+                # İstikrara (WinRate) daha fazla önem verelim.
+                score = res['pnl'] + (res['win_rate'] * 0.4)
+                
+                # Cezayı hafiflet: 3 işlemden azsa -50 yerine -10 puan düş
+                # Böylece 2 işlemle %50 kazandıran hisse elenmez.
+                if res['trades'] < 3: score -= 10 
+                if res['trades'] == 0: score = -999 # Hiç işlem yoksa ele
+                
+                if score > best_score:
+                    best_score = score
+                    best_result = res
     
-    # En iyi sonuç bile kötüyse?
+    # Sonuç Kontrolü
     if best_result:
-        if best_result['pnl'] < 0:
-            best_result['is_profitable'] = False
-        else:
+        # Eğer çok az da olsa kar varsa kabul et (> %0 yerine > %-5 toleransı)
+        # Bazen anlık sinyal çok iyidir ama geçmiş 1 yıl yataydır. 
+        # Çok katı olmayalım.
+        if best_result['pnl'] > -5: 
             best_result['is_profitable'] = True
+        else:
+            best_result['is_profitable'] = False
             
     return best_result
 
@@ -1129,9 +1139,10 @@ def scan_single_stock(symbol):
             return None 
             
         strat_name = opt_result['strategy']
+        best_p = opt_result['params']
         
         # 2. Verileri çek
-        data = get_advanced_data(symbol)
+        data = get_advanced_data(symbol, rsi_period=best_p['rsi_period'])
         if data is None: return None
         
         weekly_data = get_weekly_trend(symbol)
@@ -1140,7 +1151,7 @@ def scan_single_stock(symbol):
         score, signal, color, reasons, risk_levels = calculate_smart_score(
             data, 
             weekly_data, 
-            atr_mult=2.5, # Backtest ile uyumlu
+            atr_mult=best_p['sl_mult'], 
             entry_threshold=65
         )
         
@@ -1248,7 +1259,8 @@ with tab_analiz:
             display_name = strat_map.get(strat_name, strat_name)
             
             # Verileri çek
-            data = get_advanced_data(target_symbol.upper().strip())
+            best_p = opt_result['params']
+            data = get_advanced_data(target_symbol.upper().strip(), rsi_period=best_p['rsi_period'])
             
             # KORUMA: Eğer en iyi strateji bile zarar ediyorsa UYARI ver
             if not opt_result['is_profitable']:
@@ -1268,7 +1280,7 @@ with tab_analiz:
                 win_val = opt_result['win_rate']
                 
                 # Skoru hesapla (Stratejiye uyumlu olarak)
-                score, signal, color, reasons, risk = calculate_smart_score(data, atr_mult=2.5)
+                score, signal, color, reasons, risk = calculate_smart_score(data, atr_mult=best_p['sl_mult'])
                 
                 # Sinyal Filtreleme
                 final_signal = signal
