@@ -650,37 +650,62 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0):
         trailing_stop_price = 0
         take_profit_price = 0
         entry_price = 0
+        partial_exit_done = False  # Kademeli kâr alma için
+        original_position = 0  # İlk pozisyon büyüklüğü
         
         for i in range(len(df) - 1):
             current_close = v_closes[i]
             
             # ─── ÇIKIŞ MANTIĞI ───
             if in_position:
-                # 1. KAR AL (Take Profit)
-                if tp_ratio > 0 and v_highs[i] >= take_profit_price:
-                     exit_price = take_profit_price
-                     cash += position * exit_price * (1 - commission)
-                     wins += 1
-                     # Çıkış kaydı
-                     trades.append({
-                         'type': 'exit',
-                         'date': df.index[i],
-                         'price': exit_price,
-                         'profit': True
-                     })
-                     position = 0
-                     in_position = False
-                     continue
+                # 0. BREAKEVEN MEKANİZMASI (1 ATR kârda maliyet fiyatına çek)
+                if current_close >= entry_price + (1.0 * v_atr[i]):
+                    trailing_stop_price = max(trailing_stop_price, entry_price)  # Cost stop
+                
+                # 1. KADEMELİ KAR AL (İlk hedefte %50 pozisyon kapat)
+                if tp_ratio > 0 and not partial_exit_done and v_highs[i] >= take_profit_price:
+                    exit_price = take_profit_price
+                    partial_size = position * 0.5  # %50'sini sat
+                    cash += partial_size * exit_price * (1 - commission)
+                    position = position - partial_size  # Kalan %50
+                    partial_exit_done = True
+                    # Breakeven'a çek (kalan pozisyon için)
+                    trailing_stop_price = max(trailing_stop_price, entry_price)
+                    # İkinci hedef belirle (2x TP)
+                    take_profit_price = entry_price + (atr_mult * v_atr[i] * tp_ratio * 2)
+                    # Kayıt (kısmi çıkış)
+                    trades.append({
+                        'type': 'partial_exit',
+                        'date': df.index[i],
+                        'price': exit_price,
+                        'profit': True
+                    })
+                    continue
+                
+                # 2. TAM KAR AL (İkinci hedef - kalan pozisyon)
+                if tp_ratio > 0 and partial_exit_done and v_highs[i] >= take_profit_price:
+                    exit_price = take_profit_price
+                    cash += position * exit_price * (1 - commission)
+                    wins += 1
+                    trades.append({
+                        'type': 'exit',
+                        'date': df.index[i],
+                        'price': exit_price,
+                        'profit': True
+                    })
+                    position = 0
+                    in_position = False
+                    partial_exit_done = False
+                    continue
 
-                # 2. Stop Kontrolü (Trailing)
+                # 3. Stop Kontrolü (Trailing)
                 if v_lows[i] < trailing_stop_price:
                     exit_price = trailing_stop_price
                     if v_opens[i] < trailing_stop_price: exit_price = v_opens[i] 
                     
                     cash += position * exit_price * (1 - commission)
                     is_profit = exit_price > entry_price
-                    if is_profit: wins += 1
-                    # Çıkış kaydı
+                    if is_profit or partial_exit_done: wins += 1  # Kısmi kar alındıysa kazanç say
                     trades.append({
                         'type': 'exit',
                         'date': df.index[i],
@@ -689,20 +714,20 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0):
                     })
                     position = 0
                     in_position = False
+                    partial_exit_done = False
                     continue
                 
-                # 3. Stop Güncelleme (Trailing)
+                # 4. Stop Güncelleme (Trailing)
                 new_stop = current_close - (atr_mult * v_atr[i])
                 if new_stop > trailing_stop_price:
                     trailing_stop_price = new_stop
 
-                # 4. Acil Çıkış (Trend Çöküşü)
-                if current_close < v_ema200[i] * 0.97:
+                # 5. Acil Çıkış (Trend Çöküşü - %5 eşik)
+                if current_close < v_ema200[i] * 0.95:  # %3 -> %5'e gevşetildi
                     exit_price = current_close
                     cash += position * exit_price * (1 - commission)
                     is_profit = exit_price > entry_price
-                    if is_profit: wins += 1
-                    # Çıkış kaydı
+                    if is_profit or partial_exit_done: wins += 1
                     trades.append({
                         'type': 'exit',
                         'date': df.index[i],
@@ -711,6 +736,7 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0):
                     })
                     position = 0
                     in_position = False
+                    partial_exit_done = False
                     continue
 
             # ─── GİRİŞ MANTIĞI (Unified Score) ───
@@ -731,7 +757,7 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0):
                     'span_a': v_span_a[i],
                     'span_b': v_span_b[i],
                     'change_pct': v_change[i],
-                    'divergence': 'YOK' # Backtest'te divergence taraması şimdilik kapalı (Performans)
+                    'divergence': 'YOK'
                 }
                 
                 # Ortak skorlama fonksiyonunu çağır
@@ -739,15 +765,16 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0):
                 
                 # ALIM EŞİĞİ
                 if score >= 60:
-                    entry_price = v_opens[i+1] # Ertesi gün açılışta al
+                    entry_price = v_opens[i+1]
                     current_entry_date = df.index[i+1]
                     size = cash / entry_price
                     cost = size * entry_price * (1 + commission)
                     cash -= cost
                     position = size
+                    original_position = size  # Orijinal pozisyon kaydet
                     in_position = True
                     trades_count += 1
-                    # Giriş kaydı
+                    partial_exit_done = False  # Reset
                     trades.append({
                         'type': 'entry',
                         'date': current_entry_date,
@@ -759,7 +786,7 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0):
                     trailing_stop_price = entry_price - risk
                     
                     if tp_ratio > 0:
-                        take_profit_price = entry_price + (risk * tp_ratio)
+                        take_profit_price = entry_price + (risk * tp_ratio)  # İlk hedef
                     else:
                         take_profit_price = 999999
                 
@@ -906,10 +933,13 @@ def calculate_decision_score(data, weekly_data=None):
     elif weekly_data: # Veri var ama Boğa değilse
         trend_score -= 10
 
-    # AŞIRI UZAMA CEZASI (Extension Penalty)
-    if dist_to_ema50 > 15:
-        trend_score -= 20
+    # AŞIRI UZAMA CEZASI (Extension Penalty - Sıkılaştırıldı)
+    if dist_to_ema50 > 8:  # %15 -> %8'e sıkıştırıldı
+        trend_score -= 25  # Daha yüksek ceza
         reasons.append("EMA50'den Aşırı Uzak (Riskli)")
+    elif dist_to_ema50 > 5:
+        trend_score -= 10
+        reasons.append("EMA50'den Uzaklaşıyor")
 
     # 2. TIER: MOMENTUM
     mom_score = 0
@@ -934,14 +964,14 @@ def calculate_decision_score(data, weekly_data=None):
         mom_score += 25
         reasons.append("Trend İçi Ucuzluk (Pullback)")
     
-    # Aşırı Alım (KILL SWITCH)
+    # Aşırı Alım (KILL SWITCH - Sıkılaştırıldı)
     if rsi > 70:
-        mom_score -= 15
+        mom_score -= 25  # Daha yüksek ceza (-15 -> -25)
         if price > bb_upper:
-            mom_score -= 20
-            reasons.append("Aşırı Alım + BB Dışı")
+            mom_score -= 25  # Daha yüksek ceza (-20 -> -25)
+            reasons.append("Aşırı Alım + BB Dışı (Tehlike!)")
         else:
-            reasons.append("RSI Şişkin (>70)")
+            reasons.append("RSI > 70 (Aşırı Alım)")
 
     # 3. TIER: HACİM
     vol_score = 0
@@ -970,13 +1000,21 @@ def calculate_decision_score(data, weekly_data=None):
                 
     normalized_score = base_score + max(-50, min(50, final_raw))
     
-    # ─── HARD CAP RULES (Aşırı Alım Freni) ───
+    # ─── HARD CAP RULES (Aşırı Alım Freni - Sıkılaştırıldı) ───
     if rsi > 80:
-        normalized_score = min(normalized_score, 55) # Asla 'AL' sinyali verme
-        reasons.append("RSI > 80 (Fren)")
+        normalized_score = min(normalized_score, 50)  # BEKLE sinyali ver (55 -> 50)
+        reasons.append("RSI > 80 (Tehlikeli Bölge)")
     elif rsi > 75:
-        normalized_score = min(normalized_score, 70) # Asla 'GÜÇLÜ AL' verme
-        reasons.append("RSI > 75 (Fren)")
+        normalized_score = min(normalized_score, 55)  # Asla 'AL' verme (70 -> 55)
+        reasons.append("RSI > 75 (Aşırı Alım)")
+    elif rsi > 70:
+        normalized_score = min(normalized_score, 65)  # Yeni: RSI > 70 için de fren
+        reasons.append("RSI > 70 (Dikkatli Ol)")
+    
+    # ─── HAFTALIK TREND TEYİDİ (Yeni) ───
+    if weekly_data and weekly_data.get('ema_cross') == "AYI":
+        normalized_score = min(normalized_score, 55)  # Haftalık ayı ise asla AL verme
+        reasons.append("Haftalık Trend AYI (Blok)")
         
     return int(normalized_score), reasons
 
