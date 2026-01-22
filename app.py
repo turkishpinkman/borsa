@@ -351,6 +351,136 @@ def get_advanced_data(symbol):
         period52_low = df['Low'].rolling(window=52).min()
         df['SpanB'] = ((period52_high + period52_low) / 2).shift(26)
         
+        # ═══════════════════════════════════════════════════════════════════
+        # ADAPTIVE STRATEGY GENERATOR - YENİ İNDİKATÖRLER (20+ Sinyal Havuzu)
+        # ═══════════════════════════════════════════════════════════════════
+        
+        # ─── CCI (Commodity Channel Index - 20 Periyot) ───
+        typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+        sma_tp = typical_price.rolling(window=20).mean()
+        mean_deviation = typical_price.rolling(window=20).apply(lambda x: np.abs(x - x.mean()).mean())
+        df['CCI'] = (typical_price - sma_tp) / (0.015 * mean_deviation)
+        
+        # ─── Williams %R (14 Periyot) ───
+        highest_high = df['High'].rolling(window=14).max()
+        lowest_low = df['Low'].rolling(window=14).min()
+        df['Williams_R'] = -100 * (highest_high - df['Close']) / (highest_high - lowest_low)
+        
+        # ─── MFI (Money Flow Index - 14 Periyot) ───
+        typical_price_mfi = (df['High'] + df['Low'] + df['Close']) / 3
+        raw_money_flow = typical_price_mfi * df['Volume']
+        money_flow_positive = raw_money_flow.where(typical_price_mfi > typical_price_mfi.shift(1), 0)
+        money_flow_negative = raw_money_flow.where(typical_price_mfi < typical_price_mfi.shift(1), 0)
+        positive_flow_sum = money_flow_positive.rolling(window=14).sum()
+        negative_flow_sum = money_flow_negative.rolling(window=14).sum()
+        money_flow_ratio = positive_flow_sum / negative_flow_sum.replace(0, 0.001)
+        df['MFI'] = 100 - (100 / (1 + money_flow_ratio))
+        
+        # ─── ROC (Rate of Change - 12 Periyot) ───
+        df['ROC'] = ((df['Close'] - df['Close'].shift(12)) / df['Close'].shift(12)) * 100
+        
+        # ─── Ultimate Oscillator ───
+        bp = df['Close'] - pd.concat([df['Low'], df['Close'].shift(1)], axis=1).min(axis=1)
+        tr_uo = pd.concat([df['High'], df['Close'].shift(1)], axis=1).max(axis=1) - pd.concat([df['Low'], df['Close'].shift(1)], axis=1).min(axis=1)
+        avg7 = bp.rolling(7).sum() / tr_uo.rolling(7).sum()
+        avg14 = bp.rolling(14).sum() / tr_uo.rolling(14).sum()
+        avg28 = bp.rolling(28).sum() / tr_uo.rolling(28).sum()
+        df['Ultimate_Osc'] = 100 * ((4 * avg7) + (2 * avg14) + avg28) / 7
+        
+        # ─── Aroon Indicator (25 Periyot) ───
+        aroon_period = 25
+        df['Aroon_Up'] = 100 * df['High'].rolling(aroon_period + 1).apply(lambda x: x.argmax()) / aroon_period
+        df['Aroon_Down'] = 100 * df['Low'].rolling(aroon_period + 1).apply(lambda x: x.argmin()) / aroon_period
+        
+        # ─── Elder Ray (Bull/Bear Power) ───
+        ema13 = df['Close'].ewm(span=13, adjust=False).mean()
+        df['Bull_Power'] = df['High'] - ema13
+        df['Bear_Power'] = df['Low'] - ema13
+        
+        # ─── TRIX (15 Periyot) ───
+        ema1 = df['Close'].ewm(span=15, adjust=False).mean()
+        ema2 = ema1.ewm(span=15, adjust=False).mean()
+        ema3 = ema2.ewm(span=15, adjust=False).mean()
+        df['TRIX'] = (ema3 - ema3.shift(1)) / ema3.shift(1) * 10000
+        df['TRIX_Signal'] = df['TRIX'].ewm(span=9, adjust=False).mean()
+        
+        # ─── PPO (Percentage Price Oscillator) ───
+        ema12_ppo = df['Close'].ewm(span=12, adjust=False).mean()
+        ema26_ppo = df['Close'].ewm(span=26, adjust=False).mean()
+        df['PPO'] = ((ema12_ppo - ema26_ppo) / ema26_ppo) * 100
+        df['PPO_Signal'] = df['PPO'].ewm(span=9, adjust=False).mean()
+        
+        # ─── Parabolic SAR (Basitleştirilmiş) ───
+        # İlk değerler için trend yönünü belirle
+        af_start = 0.02
+        af_max = 0.2
+        df['PSAR'] = np.nan
+        
+        # Basit SAR hesaplaması (trend takibi için)
+        psar = df['Low'].iloc[0]
+        ep = df['High'].iloc[0]
+        af = af_start
+        trend = 1  # 1: Yukarı, -1: Aşağı
+        
+        psar_values = [psar]
+        for i in range(1, len(df)):
+            if trend == 1:
+                psar = psar + af * (ep - psar)
+                psar = min(psar, df['Low'].iloc[i-1], df['Low'].iloc[max(0, i-2)])
+                if df['Low'].iloc[i] < psar:
+                    trend = -1
+                    psar = ep
+                    ep = df['Low'].iloc[i]
+                    af = af_start
+                else:
+                    if df['High'].iloc[i] > ep:
+                        ep = df['High'].iloc[i]
+                        af = min(af + af_start, af_max)
+            else:
+                psar = psar + af * (ep - psar)
+                psar = max(psar, df['High'].iloc[i-1], df['High'].iloc[max(0, i-2)])
+                if df['High'].iloc[i] > psar:
+                    trend = 1
+                    psar = ep
+                    ep = df['High'].iloc[i]
+                    af = af_start
+                else:
+                    if df['Low'].iloc[i] < ep:
+                        ep = df['Low'].iloc[i]
+                        af = min(af + af_start, af_max)
+            psar_values.append(psar)
+        
+        df['PSAR'] = psar_values
+        
+        # ─── Donchian Channels (20 Periyot) ───
+        df['Donchian_High'] = df['High'].rolling(window=20).max()
+        df['Donchian_Low'] = df['Low'].rolling(window=20).min()
+        df['Donchian_Mid'] = (df['Donchian_High'] + df['Donchian_Low']) / 2
+        
+        # ─── SuperTrend (ATR Multiplier: 3) ───
+        supertrend_mult = 3
+        hl2 = (df['High'] + df['Low']) / 2
+        upperband = hl2 + (supertrend_mult * df['ATR'])
+        lowerband = hl2 - (supertrend_mult * df['ATR'])
+        
+        supertrend = [True] * len(df)  # True = Uptrend
+        for i in range(1, len(df)):
+            if df['Close'].iloc[i] > upperband.iloc[i-1]:
+                supertrend[i] = True
+            elif df['Close'].iloc[i] < lowerband.iloc[i-1]:
+                supertrend[i] = False
+            else:
+                supertrend[i] = supertrend[i-1]
+        
+        df['SuperTrend'] = [lowerband.iloc[i] if supertrend[i] else upperband.iloc[i] for i in range(len(df))]
+        df['SuperTrend_Direction'] = supertrend  # True = Bullish
+        
+        # ─── VWAP (Volume Weighted Average Price - Günlük Reset Yok, Kümülatif) ───
+        df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / df['Volume'].cumsum()
+        
+        # ─── Bollinger %B ───
+        df['BB_PercentB'] = (df['Close'] - df['BB_Lower']) / (df['BB_Upper'] - df['BB_Lower'])
+        
         # ─── KELTNER KANALLARI (Volatilite Patlaması İçin) ───
         df['Keltner_Mid'] = df['Close'].ewm(span=20).mean()
         df['Keltner_Upper'] = df['Keltner_Mid'] + (2 * df['ATR'])
@@ -458,6 +588,27 @@ def get_advanced_data(symbol):
             "keltner_upper": curr['Keltner_Upper'],
             "keltner_lower": curr['Keltner_Lower'],
             "keltner_mid": curr['Keltner_Mid'],
+            # ═══ ADAPTİF SİSTEM YENİ İNDİKATÖRLER ═══
+            "cci": curr['CCI'],
+            "williams_r": curr['Williams_R'],
+            "mfi": curr['MFI'],
+            "roc": curr['ROC'],
+            "ultimate_osc": curr['Ultimate_Osc'],
+            "aroon_up": curr['Aroon_Up'],
+            "aroon_down": curr['Aroon_Down'],
+            "bull_power": curr['Bull_Power'],
+            "bear_power": curr['Bear_Power'],
+            "trix": curr['TRIX'],
+            "trix_signal": curr['TRIX_Signal'],
+            "ppo": curr['PPO'],
+            "ppo_signal": curr['PPO_Signal'],
+            "psar": curr['PSAR'],
+            "donchian_high": curr['Donchian_High'],
+            "donchian_low": curr['Donchian_Low'],
+            "supertrend": curr['SuperTrend'],
+            "supertrend_dir": curr['SuperTrend_Direction'],
+            "vwap": curr['VWAP'],
+            "bb_percentb": curr['BB_PercentB'],
             # Divergence
             "divergence": divergence_signal,
         }
@@ -568,37 +719,144 @@ def get_index_data():
         return None
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3.5.3 DİNAMİK İNDİKATÖR DNA ANALİZİ
+# 3.5.3 ADAPTİF STRATEJİ JENERATÖRÜ - KENDİ KENDİNE ÖĞRENEN SİSTEM
 # ═══════════════════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=600)
-def analyze_indicator_dna(symbol, lookback_days=60):
+
+# 22 İndikatör için AL koşulları tanımları
+INDICATOR_BUY_CONDITIONS = {
+    # MOMENTUM İNDİKATÖRLERİ
+    'RSI': lambda df: (df['RSI'] < 30),
+    'StochRSI': lambda df: (df['StochRSI'] < 20),
+    'CCI': lambda df: (df['CCI'] < -100),
+    'Williams_R': lambda df: (df['Williams_R'] < -80),
+    'MFI': lambda df: (df['MFI'] < 20),
+    'ROC': lambda df: (df['ROC'] > 0) & (df['ROC'].diff() > 0),
+    'Ultimate_Osc': lambda df: (df['Ultimate_Osc'] < 30),
+    
+    # TREND İNDİKATÖRLERİ
+    'MACD_Cross': lambda df: (df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1)),
+    'EMA_Golden': lambda df: (df['Close'] > df['EMA50']) & (df['EMA50'] > df['EMA200']),
+    'Aroon_Bullish': lambda df: (df['Aroon_Up'] > 70) & (df['Aroon_Down'] < 30),
+    'TRIX_Cross': lambda df: (df['TRIX'] > df['TRIX_Signal']) & (df['TRIX'].shift(1) <= df['TRIX_Signal'].shift(1)),
+    'PPO_Cross': lambda df: (df['PPO'] > df['PPO_Signal']) & (df['PPO'].shift(1) <= df['PPO_Signal'].shift(1)),
+    'PSAR_Bullish': lambda df: (df['Close'] > df['PSAR']),
+    'SuperTrend_Bull': lambda df: df['SuperTrend_Direction'] == True,
+    'Ichimoku_TK': lambda df: (df['Tenkan'] > df['Kijun']) & (df['Tenkan'].shift(1) <= df['Kijun'].shift(1)),
+    
+    # HACİM İNDİKATÖRLERİ
+    'CMF_Positive': lambda df: (df['CMF'] > 0.10),
+    'OBV_Rising': lambda df: (df['OBV'] > df['OBV_SMA20']),
+    'VWAP_Above': lambda df: (df['Close'] > df['VWAP']),
+    
+    # VOLATİLİTE / BREAKOUT İNDİKATÖRLERİ
+    'BB_Oversold': lambda df: (df['BB_PercentB'] < 0),
+    'Donchian_Break': lambda df: (df['High'] >= df['Donchian_High'].shift(1)),
+    'Keltner_Squeeze': lambda df: (df['BB_Upper'] < df['Keltner_Upper']) & (df['BB_Lower'] > df['Keltner_Lower']),
+    
+    # ELDER RAY
+    'Elder_Bullish': lambda df: (df['Bull_Power'] > 0) & (df['Bull_Power'].diff() > 0),
+}
+
+def backtest_single_indicator(df, indicator_name, buy_condition_func, hold_days=5, min_return=0.02):
     """
-    Hissenin hangi indikatörlere daha iyi yanıt verdiğini analiz eder.
-    Son N gün için her indikatör kategorisinin başarı oranını hesaplar.
+    TEK BİR İNDİKATÖRÜN TARİHSEL BAŞARISINI ÖLÇER.
+    
+    Mantık:
+    1. 1 yıllık veriyi tara
+    2. Her AL sinyalinde hold_days gün sonraki getiriyi hesapla
+    3. Pozitif getiri (> min_return) = Başarılı sinyal
     
     Args:
-        symbol: Hisse sembolü
-        lookback_days: Geriye bakılacak gün sayısı
+        df: DataFrame (tüm indikatörler hesaplanmış)
+        indicator_name: İndikatör adı
+        buy_condition_func: AL koşulu fonksiyonu
+        hold_days: Pozisyon tutma süresi (gün)
+        min_return: Başarı eşiği (varsayılan %2)
         
     Returns:
-        dict: Her indikatör kategorisinin ağırlık çarpanı (0.5x - 1.5x arası)
-        - trend_weight: EMA, ADX bazlı sinyallerin başarısı
-        - momentum_weight: RSI, Stochastic sinyallerinin başarısı  
-        - volume_weight: CMF, hacim sinyallerinin başarısı
+        dict: {
+            'win_rate': float,  # Başarı oranı (%)
+            'total_signals': int,  # Toplam sinyal sayısı
+            'avg_return': float,  # Ortalama getiri (%)
+            'confidence': float  # 0-100 arası güven skoru
+        }
+    """
+    try:
+        # Forward return hesapla
+        df = df.copy()
+        df['Forward_Return'] = df['Close'].shift(-hold_days) / df['Close'] - 1
+        
+        # AL sinyallerini bul
+        try:
+            buy_signals = buy_condition_func(df)
+        except Exception:
+            return {'win_rate': 0, 'total_signals': 0, 'avg_return': 0, 'confidence': 0}
+        
+        # Sinyal olan günleri filtrele
+        signal_df = df[buy_signals].dropna(subset=['Forward_Return'])
+        
+        if len(signal_df) < 3:  # Minimum 3 sinyal gerekli
+            return {'win_rate': 0, 'total_signals': len(signal_df), 'avg_return': 0, 'confidence': 0}
+        
+        # Başarı oranı hesapla
+        wins = (signal_df['Forward_Return'] > min_return).sum()
+        total = len(signal_df)
+        win_rate = (wins / total) * 100
+        avg_return = signal_df['Forward_Return'].mean() * 100
+        
+        # Güven skoru (win_rate + sinyal sayısı bonusu)
+        signal_bonus = min(10, total / 2)  # Her 2 sinyal için +1, max 10
+        confidence = win_rate + signal_bonus
+        
+        return {
+            'win_rate': round(win_rate, 1),
+            'total_signals': total,
+            'avg_return': round(avg_return, 2),
+            'confidence': round(min(100, confidence), 1)
+        }
+    except Exception:
+        return {'win_rate': 0, 'total_signals': 0, 'avg_return': 0, 'confidence': 0}
+
+
+@st.cache_data(ttl=600)
+def calculate_indicator_confidence_scores(symbol):
+    """
+    HER İNDİKATÖR İÇİN O HİSSEYE ÖZEL GÜVEN SKORU HESAPLAR.
+    
+    Bu fonksiyon Adaptive Strategy Generator'ın kalbidir:
+    - 22 indikatörü ayrı ayrı backtest eder
+    - Her birinin tarihsel başarısını ölçer
+    - Sadece %50+ başarılı olanları aktif işaretler
+    
+    Args:
+        symbol: Hisse sembolü (örn: "THYAO.IS")
+        
+    Returns:
+        dict: Her indikatör için {
+            'confidence': float (0-100),
+            'active': bool,
+            'signals': int,
+            'win_rate': float,
+            'avg_return': float,
+            'current_signal': 'AL' | 'SAT' | 'BEKLE'
+        }
     """
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(period="1y")
         
-        if df.empty or len(df) < lookback_days + 10:
-            return {"trend_weight": 1.0, "momentum_weight": 1.0, "volume_weight": 1.0}
+        if df.empty or len(df) < 100:
+            return None
         
         closes = df['Close']
         highs = df['High']
         lows = df['Low']
         volumes = df['Volume']
         
-        # ─── İndikatör Hesaplamaları ───
+        # ═══════════════════════════════════════════════════════════════════
+        # TÜM İNDİKATÖRLERİ HESAPLA
+        # ═══════════════════════════════════════════════════════════════════
+        
         # RSI
         delta = closes.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -606,24 +864,33 @@ def analyze_indicator_dna(symbol, lookback_days=60):
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
         
+        # Stochastic RSI
+        rsi = df['RSI']
+        df['StochRSI'] = (rsi - rsi.rolling(14).min()) / (rsi.rolling(14).max() - rsi.rolling(14).min()) * 100
+        
         # EMA'lar
         df['EMA50'] = closes.ewm(span=50, adjust=False).mean()
         df['EMA200'] = closes.ewm(span=200, adjust=False).mean()
         
-        # ADX
+        # MACD
+        ema12 = closes.ewm(span=12, adjust=False).mean()
+        ema26 = closes.ewm(span=26, adjust=False).mean()
+        df['MACD'] = ema12 - ema26
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        
+        # ATR
         high_low = highs - lows
         high_close = np.abs(highs - closes.shift())
         low_close = np.abs(lows - closes.shift())
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        plus_dm = highs.diff()
-        minus_dm = lows.diff()
-        plus_dm[plus_dm < 0] = 0
-        minus_dm[minus_dm > 0] = 0
-        tr14 = tr.rolling(window=14).sum()
-        plus_di = 100 * (plus_dm.rolling(window=14).sum() / tr14)
-        minus_di = 100 * (np.abs(minus_dm).rolling(window=14).sum() / tr14)
-        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
-        df['ADX'] = dx.rolling(window=14).mean()
+        df['ATR'] = tr.rolling(window=14).mean()
+        
+        # Bollinger Bands
+        bb_mid = closes.rolling(window=20).mean()
+        bb_std = closes.rolling(window=20).std()
+        df['BB_Upper'] = bb_mid + (bb_std * 2)
+        df['BB_Lower'] = bb_mid - (bb_std * 2)
+        df['BB_PercentB'] = (closes - df['BB_Lower']) / (df['BB_Upper'] - df['BB_Lower'])
         
         # CMF
         mfv = ((closes - lows) - (highs - closes)) / (highs - lows)
@@ -631,62 +898,269 @@ def analyze_indicator_dna(symbol, lookback_days=60):
         volume_mfv = mfv * volumes
         df['CMF'] = volume_mfv.rolling(20).sum() / volumes.rolling(20).sum()
         
-        # Volume Ratio
-        vol_sma20 = volumes.rolling(window=20).mean()
-        df['Volume_Ratio'] = volumes / vol_sma20
+        # OBV
+        obv = (np.sign(closes.diff()) * volumes).fillna(0).cumsum()
+        df['OBV'] = obv
+        df['OBV_SMA20'] = df['OBV'].rolling(window=20).mean()
         
-        # 5 günlük ileri getiri hesapla
-        df['Forward_Return'] = closes.shift(-5) / closes - 1
+        # CCI
+        typical_price = (highs + lows + closes) / 3
+        sma_tp = typical_price.rolling(window=20).mean()
+        mean_dev = typical_price.rolling(window=20).apply(lambda x: np.abs(x - x.mean()).mean())
+        df['CCI'] = (typical_price - sma_tp) / (0.015 * mean_dev)
+        
+        # Williams %R
+        highest_high = highs.rolling(window=14).max()
+        lowest_low = lows.rolling(window=14).min()
+        df['Williams_R'] = -100 * (highest_high - closes) / (highest_high - lowest_low)
+        
+        # MFI
+        typical_price_mfi = (highs + lows + closes) / 3
+        raw_money_flow = typical_price_mfi * volumes
+        mf_pos = raw_money_flow.where(typical_price_mfi > typical_price_mfi.shift(1), 0)
+        mf_neg = raw_money_flow.where(typical_price_mfi < typical_price_mfi.shift(1), 0)
+        mf_ratio = mf_pos.rolling(14).sum() / mf_neg.rolling(14).sum().replace(0, 0.001)
+        df['MFI'] = 100 - (100 / (1 + mf_ratio))
+        
+        # ROC
+        df['ROC'] = ((closes - closes.shift(12)) / closes.shift(12)) * 100
+        
+        # Ultimate Oscillator
+        bp = closes - pd.concat([lows, closes.shift(1)], axis=1).min(axis=1)
+        tr_uo = pd.concat([highs, closes.shift(1)], axis=1).max(axis=1) - pd.concat([lows, closes.shift(1)], axis=1).min(axis=1)
+        avg7 = bp.rolling(7).sum() / tr_uo.rolling(7).sum()
+        avg14 = bp.rolling(14).sum() / tr_uo.rolling(14).sum()
+        avg28 = bp.rolling(28).sum() / tr_uo.rolling(28).sum()
+        df['Ultimate_Osc'] = 100 * ((4 * avg7) + (2 * avg14) + avg28) / 7
+        
+        # Aroon
+        aroon_period = 25
+        df['Aroon_Up'] = 100 * highs.rolling(aroon_period + 1).apply(lambda x: x.argmax()) / aroon_period
+        df['Aroon_Down'] = 100 * lows.rolling(aroon_period + 1).apply(lambda x: x.argmin()) / aroon_period
+        
+        # TRIX
+        ema1 = closes.ewm(span=15, adjust=False).mean()
+        ema2 = ema1.ewm(span=15, adjust=False).mean()
+        ema3 = ema2.ewm(span=15, adjust=False).mean()
+        df['TRIX'] = (ema3 - ema3.shift(1)) / ema3.shift(1) * 10000
+        df['TRIX_Signal'] = df['TRIX'].ewm(span=9, adjust=False).mean()
+        
+        # PPO
+        ema12_ppo = closes.ewm(span=12, adjust=False).mean()
+        ema26_ppo = closes.ewm(span=26, adjust=False).mean()
+        df['PPO'] = ((ema12_ppo - ema26_ppo) / ema26_ppo) * 100
+        df['PPO_Signal'] = df['PPO'].ewm(span=9, adjust=False).mean()
+        
+        # Parabolic SAR (Basitleştirilmiş)
+        af_start, af_max = 0.02, 0.2
+        psar = lows.iloc[0]
+        ep = highs.iloc[0]
+        af = af_start
+        trend = 1
+        psar_values = [psar]
+        for i in range(1, len(df)):
+            if trend == 1:
+                psar = psar + af * (ep - psar)
+                psar = min(psar, lows.iloc[i-1], lows.iloc[max(0, i-2)])
+                if lows.iloc[i] < psar:
+                    trend, psar, ep, af = -1, ep, lows.iloc[i], af_start
+                elif highs.iloc[i] > ep:
+                    ep, af = highs.iloc[i], min(af + af_start, af_max)
+            else:
+                psar = psar + af * (ep - psar)
+                psar = max(psar, highs.iloc[i-1], highs.iloc[max(0, i-2)])
+                if highs.iloc[i] > psar:
+                    trend, psar, ep, af = 1, ep, highs.iloc[i], af_start
+                elif lows.iloc[i] < ep:
+                    ep, af = lows.iloc[i], min(af + af_start, af_max)
+            psar_values.append(psar)
+        df['PSAR'] = psar_values
+        
+        # SuperTrend
+        supertrend_mult = 3
+        hl2 = (highs + lows) / 2
+        upperband = hl2 + (supertrend_mult * df['ATR'])
+        lowerband = hl2 - (supertrend_mult * df['ATR'])
+        supertrend = [True] * len(df)
+        for i in range(1, len(df)):
+            if closes.iloc[i] > upperband.iloc[i-1]:
+                supertrend[i] = True
+            elif closes.iloc[i] < lowerband.iloc[i-1]:
+                supertrend[i] = False
+            else:
+                supertrend[i] = supertrend[i-1]
+        df['SuperTrend_Direction'] = supertrend
+        
+        # Donchian Channels
+        df['Donchian_High'] = highs.rolling(window=20).max()
+        df['Donchian_Low'] = lows.rolling(window=20).min()
+        
+        # VWAP
+        df['VWAP'] = (volumes * (highs + lows + closes) / 3).cumsum() / volumes.cumsum()
+        
+        # Ichimoku
+        nine_h = highs.rolling(window=9).max()
+        nine_l = lows.rolling(window=9).min()
+        df['Tenkan'] = (nine_h + nine_l) / 2
+        p26_h = highs.rolling(window=26).max()
+        p26_l = lows.rolling(window=26).min()
+        df['Kijun'] = (p26_h + p26_l) / 2
+        
+        # Keltner Channels
+        df['Keltner_Mid'] = closes.ewm(span=20).mean()
+        df['Keltner_Upper'] = df['Keltner_Mid'] + (2 * df['ATR'])
+        df['Keltner_Lower'] = df['Keltner_Mid'] - (2 * df['ATR'])
+        
+        # Elder Ray
+        ema13 = closes.ewm(span=13, adjust=False).mean()
+        df['Bull_Power'] = highs - ema13
+        df['Bear_Power'] = lows - ema13
         
         df = df.dropna()
         
-        if len(df) < lookback_days:
-            return {"trend_weight": 1.0, "momentum_weight": 1.0, "volume_weight": 1.0}
+        # ═══════════════════════════════════════════════════════════════════
+        # HER İNDİKATÖRÜ BACKTEST ET
+        # ═══════════════════════════════════════════════════════════════════
         
-        # Son N günü analiz et
-        analysis_df = df.tail(lookback_days)
+        results = {}
+        current_row = df.iloc[-1]
         
-        # ─── TREND SINYAL BAŞARISI ───
-        # Fiyat > EMA50 ve EMA50 > EMA200 olduğunda al sinyali
-        trend_signals = analysis_df[
-            (analysis_df['Close'] > analysis_df['EMA50']) & 
-            (analysis_df['EMA50'] > analysis_df['EMA200']) &
-            (analysis_df['ADX'] > 20)
-        ]
-        trend_success = (trend_signals['Forward_Return'] > 0.02).sum() / max(len(trend_signals), 1)
+        for indicator_name, condition_func in INDICATOR_BUY_CONDITIONS.items():
+            # Backtest yap
+            backtest_result = backtest_single_indicator(df, indicator_name, condition_func)
+            
+            # Mevcut sinyal durumunu kontrol et
+            try:
+                current_signal_mask = condition_func(df.tail(1))
+                is_buy_now = current_signal_mask.iloc[0] if len(current_signal_mask) > 0 else False
+            except Exception:
+                is_buy_now = False
+            
+            # Aktiflik kontrolü (confidence >= 50 VE en az 3 sinyal)
+            is_active = backtest_result['confidence'] >= 50 and backtest_result['total_signals'] >= 3
+            
+            results[indicator_name] = {
+                'confidence': backtest_result['confidence'],
+                'active': is_active,
+                'signals': backtest_result['total_signals'],
+                'win_rate': backtest_result['win_rate'],
+                'avg_return': backtest_result['avg_return'],
+                'current_signal': 'AL' if is_buy_now else 'BEKLE'
+            }
         
-        # ─── MOMENTUM SINYAL BAŞARISI ───
-        # RSI < 40 ve yükseliyor (dip avı)
-        momentum_signals = analysis_df[
-            (analysis_df['RSI'] < 40) & 
-            (analysis_df['RSI'].diff() > 0)
-        ]
-        momentum_success = (momentum_signals['Forward_Return'] > 0.02).sum() / max(len(momentum_signals), 1)
+        return results
         
-        # ─── HACİM SINYAL BAŞARISI ───
-        # CMF > 0.1 ve hacim patlaması
-        volume_signals = analysis_df[
-            (analysis_df['CMF'] > 0.1) & 
-            (analysis_df['Volume_Ratio'] > 1.5)
-        ]
-        volume_success = (volume_signals['Forward_Return'] > 0.02).sum() / max(len(volume_signals), 1)
+    except Exception as e:
+        return None
+
+
+def generate_adaptive_signal(data, indicator_scores):
+    """
+    SADECE AKTİF İNDİKATÖRLERİN OY BİRLİĞİ İLE KARAR VERİR.
+    
+    Mantık:
+    1. Aktif indikatörleri filtrele (confidence >= 50)
+    2. Her aktif indikatörün mevcut sinyalini oku
+    3. Ağırlıklı oylama yap (confidence = oy ağırlığı)
+    4. Sonuç hesapla
+    
+    Karar Kuralları:
+    - %60+ AL oyu → GÜÇLÜ AL (skor 80+)
+    - %50-60 AL oyu → AL (skor 60+)
+    - %40-50 AL oyu → BEKLE (skor 50)
+    - %40'ın altı → SAT sinyali
+    
+    Args:
+        data: Hisse teknik verileri
+        indicator_scores: calculate_indicator_confidence_scores çıktısı
         
-        # Ağırlıkları hesapla (0.5x - 1.5x arası)
-        # Başarı oranı: 0% -> 0.5x, 50% -> 1.0x, 100% -> 1.5x
-        def calc_weight(success_rate):
-            return 0.5 + (success_rate * 1.0)
+    Returns:
+        tuple: (score, reasons, active_indicators)
+    """
+    if not indicator_scores:
+        return 50, ["DNA verisi yok"], []
+    
+    # Aktif indikatörleri filtrele
+    active_indicators = {
+        name: info for name, info in indicator_scores.items() 
+        if info['active']
+    }
+    
+    if len(active_indicators) < 3:
+        return 50, ["Yetersiz aktif indikatör"], list(active_indicators.keys())
+    
+    # Ağırlıklı oylama
+    total_weight = 0
+    buy_weight = 0
+    buy_reasons = []
+    
+    for name, info in active_indicators.items():
+        weight = info['confidence']
+        total_weight += weight
         
-        return {
-            "trend_weight": round(calc_weight(trend_success), 2),
-            "momentum_weight": round(calc_weight(momentum_success), 2),
-            "volume_weight": round(calc_weight(volume_success), 2),
-            "trend_success": round(trend_success * 100, 1),
-            "momentum_success": round(momentum_success * 100, 1),
-            "volume_success": round(volume_success * 100, 1)
-        }
-        
-    except Exception:
+        if info['current_signal'] == 'AL':
+            buy_weight += weight
+            buy_reasons.append(f"{name} (+{info['win_rate']:.0f}%)")
+    
+    # Oy oranı hesapla
+    if total_weight > 0:
+        buy_ratio = buy_weight / total_weight
+    else:
+        buy_ratio = 0
+    
+    # Skoru hesapla
+    if buy_ratio >= 0.60:
+        score = 80 + int((buy_ratio - 0.60) * 50)  # 80-100 arası
+        reasons = [f"🎯 Güçlü Konsensüs (%{buy_ratio*100:.0f})"] + buy_reasons[:3]
+    elif buy_ratio >= 0.50:
+        score = 60 + int((buy_ratio - 0.50) * 200)  # 60-80 arası
+        reasons = [f"✅ Çoğunluk AL (%{buy_ratio*100:.0f})"] + buy_reasons[:3]
+    elif buy_ratio >= 0.40:
+        score = 50
+        reasons = [f"⏸️ Kararsız (%{buy_ratio*100:.0f})"]
+    else:
+        score = 30 + int(buy_ratio * 50)  # 30-50 arası
+        reasons = [f"⚠️ Çoğunluk SAT (%{(1-buy_ratio)*100:.0f})"]
+    
+    # Aktif indikatör sayısı bonusu
+    if len(active_indicators) >= 10:
+        score = min(100, score + 5)
+        reasons.append(f"📊 {len(active_indicators)} aktif indikatör")
+    
+    return min(100, max(0, score)), reasons, list(active_indicators.keys())
+
+
+# Eski fonksiyonu koruyoruz (geriye uyumluluk için sarmalayıcı)
+@st.cache_data(ttl=600)
+def analyze_indicator_dna(symbol, lookback_days=60):
+    """
+    Geriye uyumluluk için eski API.
+    Yeni sistem calculate_indicator_confidence_scores kullanır.
+    """
+    scores = calculate_indicator_confidence_scores(symbol)
+    
+    if not scores:
         return {"trend_weight": 1.0, "momentum_weight": 1.0, "volume_weight": 1.0}
+    
+    # Kategorilere göre ortalama başarı oranı hesapla
+    momentum_indicators = ['RSI', 'StochRSI', 'CCI', 'Williams_R', 'MFI', 'ROC', 'Ultimate_Osc']
+    trend_indicators = ['MACD_Cross', 'EMA_Golden', 'Aroon_Bullish', 'TRIX_Cross', 'PPO_Cross', 'PSAR_Bullish', 'SuperTrend_Bull', 'Ichimoku_TK']
+    volume_indicators = ['CMF_Positive', 'OBV_Rising', 'VWAP_Above']
+    
+    def calc_category_weight(indicators):
+        active = [scores[i]['win_rate'] for i in indicators if i in scores and scores[i]['active']]
+        if not active:
+            return 1.0
+        avg_win = sum(active) / len(active)
+        return 0.5 + (avg_win / 100)  # 0.5x - 1.5x arası
+    
+    return {
+        "trend_weight": round(calc_category_weight(trend_indicators), 2),
+        "momentum_weight": round(calc_category_weight(momentum_indicators), 2),
+        "volume_weight": round(calc_category_weight(volume_indicators), 2),
+        "indicator_scores": scores  # Yeni: Detaylı skorlar
+    }
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3.6 WYCKOFF & PRICE ACTION ANALİZ MOTORU
@@ -1671,9 +2145,9 @@ def calculate_decision_score(data, weekly_data=None, rsi_limit=75, indicator_dna
         
     return int(normalized_score), reasons
 
-def calculate_smart_score(data, weekly_data=None, atr_mult=None, tp_ratio=None, rsi_limit=75, indicator_dna=None, df=None):
+def calculate_smart_score(data, weekly_data=None, atr_mult=None, tp_ratio=None, rsi_limit=75, indicator_dna=None, df=None, indicator_scores=None):
     """
-    Akıllı skor hesaplama fonksiyonu - WYCKOFF ENTEGRE.
+    Akıllı skor hesaplama fonksiyonu - ADAPTİF KONSENSÜS ENTEGRE.
     
     Args:
         data: Hisse teknik verileri
@@ -1681,20 +2155,54 @@ def calculate_smart_score(data, weekly_data=None, atr_mult=None, tp_ratio=None, 
         atr_mult: ATR çarpanı (stop-loss için)
         tp_ratio: Take-profit oranı
         rsi_limit: RSI limiti
-        indicator_dna: Hissenin DNA analizi
+        indicator_dna: Hissenin DNA analizi (eski sistem)
         df: DataFrame (Wyckoff analizi için gerekli)
+        indicator_scores: Yeni adaptif sistem - calculate_indicator_confidence_scores çıktısı
     """
-    # Eğer DataFrame varsa Wyckoff skorlamasını kullan
-    if df is not None and len(df) >= 20:
+    active_indicators = []
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # YENİ ADAPTİF KONSENSÜS SİSTEMİ
+    # ═══════════════════════════════════════════════════════════════════
+    if indicator_scores:
+        # Yeni sistem: Sadece kanıtlanmış indikatörlerin oy birliği ile karar ver
+        score, reasons, active_indicators = generate_adaptive_signal(data, indicator_scores)
+        
+        # Wyckoff ile hibrit kontrol (opsiyonel güçlendirme)
+        if df is not None and len(df) >= 20:
+            wyckoff_score, wyckoff_reasons, wyckoff_data = calculate_wyckoff_score(data, df)
+            
+            # Wyckoff yapı bilgisini ekle
+            if wyckoff_data.get('structure') == 'UPTREND':
+                score = min(100, score + 5)
+                reasons.append("📈 Wyckoff: Yükseliş Yapısı")
+            elif wyckoff_data.get('structure') == 'DOWNTREND':
+                score = max(0, score - 10)
+                reasons.append("📉 Wyckoff: Düşüş Yapısı")
+                
+            # Spring veya CHoCH varsa bonus
+            if wyckoff_data.get('liquidity_sweep', {}).get('sweep_type') == 'SPRING':
+                score = min(100, score + 10)
+                reasons.append("🎯 Spring Tespit!")
+            if wyckoff_data.get('choch', {}).get('choch_type') == 'BULLISH':
+                score = min(100, score + 10)
+                reasons.append("✅ CHoCH: Trend Dönüşü!")
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # WYCKOFF SKORLAMASI (Adaptif sistem yoksa)
+    # ═══════════════════════════════════════════════════════════════════
+    elif df is not None and len(df) >= 20:
         score, reasons, wyckoff_data = calculate_wyckoff_score(data, df)
         
         # Wyckoff verisini reasons'a ekle
         if wyckoff_data.get('structure'):
             reasons.insert(0, f"📊 Yapı: {wyckoff_data['structure']}")
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # ESKİ SİSTEM (Geriye uyumluluk)
+    # ═══════════════════════════════════════════════════════════════════
     else:
-        # DataFrame yoksa eski sistemi kullan (geriye uyumluluk)
         score, reasons = calculate_decision_score(data, weekly_data, rsi_limit=rsi_limit, indicator_dna=indicator_dna)
-        wyckoff_data = None
     
     # Renk ve Etiket
     if score >= 80:
@@ -1731,7 +2239,8 @@ def calculate_smart_score(data, weekly_data=None, atr_mult=None, tp_ratio=None, 
         "stop_loss": stop_loss,
         "take_profit_1": tp1,
         "take_profit_2": tp2,
-        "risk_reward": tp_ratio if tp_ratio else 1.5
+        "risk_reward": tp_ratio if tp_ratio else 1.5,
+        "active_indicators": active_indicators  # Yeni: Aktif indikatör listesi
     }
 
     return score, signal, color, reasons, risk_levels
@@ -2092,11 +2601,14 @@ with tab_analiz:
     # Analiz Butonu Tıklandığında
     if st.session_state.analyzed:
         target_symbol = st.session_state.symbol
-        with st.spinner("Yapay zeka verileri işliyor ve optimizasyon yapıyor..."):
+        with st.spinner("Yapay zeka verileri işliyor ve Adaptif DNA analizi yapıyor..."):
             data = get_advanced_data(target_symbol.upper().strip())
             weekly_data = get_weekly_trend(target_symbol.upper().strip())
             
-            # YENİ: DNA ANALİZİ (Hissenin favori indikatörlerini bul)
+            # YENİ: ADAPTİF DNA ANALİZİ (22 İndikatörü Ayrı Ayrı Backtest Et)
+            indicator_scores = calculate_indicator_confidence_scores(target_symbol.upper().strip())
+            
+            # Geriye uyumluluk için eski format
             indicator_dna = analyze_indicator_dna(target_symbol.upper().strip())
             
             # ÖNCE OPTİMİZASYON YAP
@@ -2114,8 +2626,8 @@ with tab_analiz:
             # YENİ: Piyasa Rejimi Tespiti
             regime, osc_mult, trend_mult = detect_market_regime(data.get('adx', 20))
             
-            # ═══ SİNYAL SKORU (WYCKOFF ALGORİTMASI) ═══
-            # Optimize edilmiş parametreleri ve DataFrame'i sinyal hesaplamasına gönder
+            # ═══ SİNYAL SKORU (ADAPTİF KONSENSÜS SİSTEMİ) ═══
+            # Yeni sistem: 22 indikatörün oy birliği ile karar ver
             score, signal, signal_color, reasons, risk_levels = calculate_smart_score(
                 data, 
                 weekly_data, 
@@ -2123,7 +2635,8 @@ with tab_analiz:
                 tp_ratio=best_params['take_profit_ratio'],
                 rsi_limit=best_params['rsi_limit'],
                 indicator_dna=indicator_dna,
-                df=data['df']  # WYCKOFF için DataFrame
+                df=data['df'],
+                indicator_scores=indicator_scores  # YENİ: Adaptif sistem
             )
             
             # Karar Paneli
@@ -2228,8 +2741,50 @@ with tab_analiz:
 ''', unsafe_allow_html=True)
             
             with reg_col2:
-                # DNA sonuçları
-                if indicator_dna:
+                # ADAPTİF DNA SONUÇLARI (Yeni Sistem)
+                if indicator_scores:
+                    active_count = sum(1 for i in indicator_scores.values() if i['active'])
+                    total_count = len(indicator_scores)
+                    buy_count = sum(1 for i in indicator_scores.values() if i['active'] and i['current_signal'] == 'AL')
+                    
+                    # En iyi 5 aktif indikatörü göster
+                    active_list = sorted(
+                        [(k, v) for k, v in indicator_scores.items() if v['active']],
+                        key=lambda x: x[1]['confidence'],
+                        reverse=True
+                    )[:5]
+                    
+                    indicators_html = ""
+                    for name, info in active_list:
+                        signal_badge = "🟢" if info['current_signal'] == 'AL' else "⚪"
+                        indicators_html += f'''
+                        <div style="display: flex; justify-content: space-between; padding: 0.25rem 0; border-bottom: 1px solid rgba(255,255,255,0.03);">
+                            <span style="color: rgba(255,255,255,0.7); font-size: 0.7rem;">{signal_badge} {name}</span>
+                            <span style="color: #10b981; font-size: 0.65rem;">%{info['win_rate']:.0f} başarı</span>
+                        </div>'''
+                    
+                    st.markdown(f'''
+<div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 1rem;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+    <div style="font-size: 0.65rem; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 1px;">Adaptif DNA Analizi</div>
+    <div style="font-size: 0.6rem; color: rgba(255,255,255,0.3);">{active_count}/{total_count} aktif</div>
+</div>
+<div style="display: flex; gap: 1rem; margin-bottom: 0.75rem;">
+    <div style="flex: 1; background: rgba(16,185,129,0.1); border-radius: 8px; padding: 0.5rem; text-align: center;">
+        <div style="font-size: 0.6rem; color: rgba(255,255,255,0.4);">AL Veriyor</div>
+        <div style="font-size: 1.25rem; color: #10b981; font-weight: 700;">{buy_count}</div>
+    </div>
+    <div style="flex: 1; background: rgba(251,191,36,0.1); border-radius: 8px; padding: 0.5rem; text-align: center;">
+        <div style="font-size: 0.6rem; color: rgba(255,255,255,0.4);">Bekle</div>
+        <div style="font-size: 1.25rem; color: #fbbf24; font-weight: 700;">{active_count - buy_count}</div>
+    </div>
+</div>
+<div style="font-size: 0.6rem; color: rgba(255,255,255,0.35); margin-bottom: 0.5rem;">En Güvenilir İndikatörler:</div>
+{indicators_html}
+</div>
+''', unsafe_allow_html=True)
+                elif indicator_dna:
+                    # Eskiye uyumluluk (Fallback)
                     trend_w = indicator_dna.get('trend_weight', 1.0)
                     mom_w = indicator_dna.get('momentum_weight', 1.0)
                     vol_w = indicator_dna.get('volume_weight', 1.0)
