@@ -512,6 +512,183 @@ def get_weekly_trend(symbol):
         return None
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 3.5.1 PİYASA REJİMİ TESPİTİ (Regime Switching)
+# ═══════════════════════════════════════════════════════════════════════════════
+def detect_market_regime(adx_value):
+    """
+    ADX değerine göre piyasa rejimini belirler.
+    
+    Returns:
+        tuple: (regime_name, oscillator_weight_mult, trend_weight_mult)
+        - "RANGE": ADX < 20 → Salınım moduna geç (RSI, Stokastik ağırlığı artar)
+        - "TRANSITION": 20 <= ADX < 25 → Geçiş bölgesi
+        - "TREND": ADX >= 25 → Trend moduna geç (MACD, EMA ağırlığı artar)
+    """
+    if pd.isna(adx_value) or adx_value is None:
+        return ("TRANSITION", 1.0, 1.0)  # Varsayılan nötr
+    
+    if adx_value < 20:
+        # YATAY PİYASA: Osilatörler daha iyi çalışır
+        return ("RANGE", 2.5, 0.5)
+    elif adx_value < 25:
+        # GEÇİŞ BÖLGESİ: Dengeli yaklaşım
+        return ("TRANSITION", 1.5, 1.0)
+    else:
+        # GÜÇLÜ TREND: Trend indikatörleri daha iyi çalışır
+        return ("TREND", 0.5, 2.0)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3.5.2 ENDEKS VERİSİ (BIST XU100 Korelasyonu)
+# ═══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=300)
+def get_index_data():
+    """
+    BIST 100 (XU100.IS) endeks verisini çeker.
+    Çıkış stratejisinde endeks korelasyonu için kullanılır.
+    
+    Returns:
+        dict: Endeks fiyatı, EMA20, ve güç durumu
+    """
+    try:
+        ticker = yf.Ticker("XU100.IS")
+        hist = ticker.history(period="6mo")
+        
+        if hist.empty or len(hist) < 20:
+            return None
+        
+        hist['EMA20'] = hist['Close'].ewm(span=20, adjust=False).mean()
+        curr = hist.iloc[-1]
+        
+        return {
+            "price": curr['Close'],
+            "ema20": curr['EMA20'],
+            "is_strong": curr['Close'] > curr['EMA20']  # Endeks güçlü mü?
+        }
+    except Exception:
+        return None
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3.5.3 DİNAMİK İNDİKATÖR DNA ANALİZİ
+# ═══════════════════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=600)
+def analyze_indicator_dna(symbol, lookback_days=60):
+    """
+    Hissenin hangi indikatörlere daha iyi yanıt verdiğini analiz eder.
+    Son N gün için her indikatör kategorisinin başarı oranını hesaplar.
+    
+    Args:
+        symbol: Hisse sembolü
+        lookback_days: Geriye bakılacak gün sayısı
+        
+    Returns:
+        dict: Her indikatör kategorisinin ağırlık çarpanı (0.5x - 1.5x arası)
+        - trend_weight: EMA, ADX bazlı sinyallerin başarısı
+        - momentum_weight: RSI, Stochastic sinyallerinin başarısı  
+        - volume_weight: CMF, hacim sinyallerinin başarısı
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period="1y")
+        
+        if df.empty or len(df) < lookback_days + 10:
+            return {"trend_weight": 1.0, "momentum_weight": 1.0, "volume_weight": 1.0}
+        
+        closes = df['Close']
+        highs = df['High']
+        lows = df['Low']
+        volumes = df['Volume']
+        
+        # ─── İndikatör Hesaplamaları ───
+        # RSI
+        delta = closes.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        # EMA'lar
+        df['EMA50'] = closes.ewm(span=50, adjust=False).mean()
+        df['EMA200'] = closes.ewm(span=200, adjust=False).mean()
+        
+        # ADX
+        high_low = highs - lows
+        high_close = np.abs(highs - closes.shift())
+        low_close = np.abs(lows - closes.shift())
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        plus_dm = highs.diff()
+        minus_dm = lows.diff()
+        plus_dm[plus_dm < 0] = 0
+        minus_dm[minus_dm > 0] = 0
+        tr14 = tr.rolling(window=14).sum()
+        plus_di = 100 * (plus_dm.rolling(window=14).sum() / tr14)
+        minus_di = 100 * (np.abs(minus_dm).rolling(window=14).sum() / tr14)
+        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+        df['ADX'] = dx.rolling(window=14).mean()
+        
+        # CMF
+        mfv = ((closes - lows) - (highs - closes)) / (highs - lows)
+        mfv = mfv.fillna(0)
+        volume_mfv = mfv * volumes
+        df['CMF'] = volume_mfv.rolling(20).sum() / volumes.rolling(20).sum()
+        
+        # Volume Ratio
+        vol_sma20 = volumes.rolling(window=20).mean()
+        df['Volume_Ratio'] = volumes / vol_sma20
+        
+        # 5 günlük ileri getiri hesapla
+        df['Forward_Return'] = closes.shift(-5) / closes - 1
+        
+        df = df.dropna()
+        
+        if len(df) < lookback_days:
+            return {"trend_weight": 1.0, "momentum_weight": 1.0, "volume_weight": 1.0}
+        
+        # Son N günü analiz et
+        analysis_df = df.tail(lookback_days)
+        
+        # ─── TREND SINYAL BAŞARISI ───
+        # Fiyat > EMA50 ve EMA50 > EMA200 olduğunda al sinyali
+        trend_signals = analysis_df[
+            (analysis_df['Close'] > analysis_df['EMA50']) & 
+            (analysis_df['EMA50'] > analysis_df['EMA200']) &
+            (analysis_df['ADX'] > 20)
+        ]
+        trend_success = (trend_signals['Forward_Return'] > 0.02).sum() / max(len(trend_signals), 1)
+        
+        # ─── MOMENTUM SINYAL BAŞARISI ───
+        # RSI < 40 ve yükseliyor (dip avı)
+        momentum_signals = analysis_df[
+            (analysis_df['RSI'] < 40) & 
+            (analysis_df['RSI'].diff() > 0)
+        ]
+        momentum_success = (momentum_signals['Forward_Return'] > 0.02).sum() / max(len(momentum_signals), 1)
+        
+        # ─── HACİM SINYAL BAŞARISI ───
+        # CMF > 0.1 ve hacim patlaması
+        volume_signals = analysis_df[
+            (analysis_df['CMF'] > 0.1) & 
+            (analysis_df['Volume_Ratio'] > 1.5)
+        ]
+        volume_success = (volume_signals['Forward_Return'] > 0.02).sum() / max(len(volume_signals), 1)
+        
+        # Ağırlıkları hesapla (0.5x - 1.5x arası)
+        # Başarı oranı: 0% -> 0.5x, 50% -> 1.0x, 100% -> 1.5x
+        def calc_weight(success_rate):
+            return 0.5 + (success_rate * 1.0)
+        
+        return {
+            "trend_weight": round(calc_weight(trend_success), 2),
+            "momentum_weight": round(calc_weight(momentum_success), 2),
+            "volume_weight": round(calc_weight(volume_success), 2),
+            "trend_success": round(trend_success * 100, 1),
+            "momentum_success": round(momentum_success * 100, 1),
+            "volume_success": round(volume_success * 100, 1)
+        }
+        
+    except Exception:
+        return {"trend_weight": 1.0, "momentum_weight": 1.0, "volume_weight": 1.0}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 3.6 BACKTEST MOTORU
 # ═══════════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -651,6 +828,14 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0, rsi_limit=75):
         partial_exit_done = False  # Kademeli kâr alma için
         original_position = 0  # İlk pozisyon büyüklüğü
         
+        # ─── BIST'E ÖZEL ÇIKIŞ STRATEJİLERİ ───
+        # Endeks korelasyonu için XU100 verisi
+        index_data = get_index_data()
+        index_is_strong = index_data['is_strong'] if index_data else True  # Varsayılan güçlü
+        
+        # ATR Bazlı Volatilite Stopu (2x ATR)
+        volatility_stop_mult = 2.0  # Sabit % yerine dinamik ATR
+        
         for i in range(len(df) - 1):
             current_close = v_closes[i]
             
@@ -715,10 +900,34 @@ def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0, rsi_limit=75):
                     partial_exit_done = False
                     continue
                 
-                # 4. Stop Güncelleme (Trailing)
-                new_stop = current_close - (atr_mult * v_atr[i])
+                # 4. Stop Güncelleme (Trailing - ATR Bazlı)
+                # BIST volatilite yapısına uyum: 2x ATR kullan
+                new_stop = current_close - (volatility_stop_mult * v_atr[i])
                 if new_stop > trailing_stop_price:
                     trailing_stop_price = new_stop
+
+                # 4.5 BIST ENDEKS KORELASYONU ÇIKIŞI
+                # Teknik SAT sinyali geldi ama endeks güçlüyse %25 pozisyon koru
+                # RSI > 70 ve Fiyat dirençte = teknik SAT sinyali
+                is_technical_sell = (v_rsi[i] > 70) and (current_close >= v_bb_upper[i])
+                
+                if is_technical_sell and index_is_strong and not partial_exit_done:
+                    # Sadece %75'ini sat, %25'ini tut
+                    exit_price = current_close
+                    partial_size = position * 0.75
+                    cash += partial_size * exit_price * (1 - commission)
+                    position = position - partial_size  # Kalan %25
+                    partial_exit_done = True
+                    # Breakeven'a çek
+                    trailing_stop_price = max(trailing_stop_price, entry_price)
+                    trades.append({
+                        'type': 'partial_exit',
+                        'date': df.index[i],
+                        'price': exit_price,
+                        'profit': True,
+                        'reason': 'index_correlation'
+                    })
+                    continue
 
                 # 5. Acil Çıkış (Trend Çöküşü - %5 eşik)
                 if current_close < v_ema200[i] * 0.95:  # %3 -> %5'e gevşetildi
@@ -855,23 +1064,42 @@ def optimize_strategy_robust(symbol):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4. SİNYAL SKOR HESAPLAMA
 # ═══════════════════════════════════════════════════════════════════════════════
-def calculate_decision_score(data, weekly_data=None, rsi_limit=75):
+def calculate_decision_score(data, weekly_data=None, rsi_limit=75, indicator_dna=None):
     """
-    rsi_limit: 75 (Muhafazakar) veya 85 (Agresif/Ralli Modu)
+    Dinamik ağırlıklı karar skorlama fonksiyonu.
+    
+    Args:
+        data: Hisse teknik verileri
+        weekly_data: Haftalık trend verileri
+        rsi_limit: 75 (Muhafazakar) veya 85 (Agresif/Ralli Modu)
+        indicator_dna: Hissenin indikatör başarı analizi (analyze_indicator_dna'dan)
     """
     base_score = 50
     score = 0
     reasons = []
     
-    # KATSAYILAR
-    W_TREND = 1.0     
-    W_MOMENTUM = 2.0  
-    W_VOLUME = 1.5    
-    W_PATTERN = 1.5   
-
     def get_val(key, default=0):
         val = data.get(key, default)
         return val if pd.notna(val) else default
+    
+    # ─── REJİM TESPİTİ (ADX Bazlı Dinamik Ağırlıklar) ───
+    adx = get_val('adx')
+    regime, osc_mult, trend_mult = detect_market_regime(adx)
+    
+    # ─── DİNAMİK KATSAYILAR ───
+    # DNA varsa hisse-spesifik ağırlıkları kullan
+    if indicator_dna:
+        W_TREND = 1.0 * trend_mult * indicator_dna.get('trend_weight', 1.0)
+        W_MOMENTUM = 2.0 * osc_mult * indicator_dna.get('momentum_weight', 1.0)
+        W_VOLUME = 1.5 * indicator_dna.get('volume_weight', 1.0)
+        W_PATTERN = 1.5
+        reasons.append(f"Rejim: {regime}")
+    else:
+        # Sadece rejim bazlı ağırlıklar
+        W_TREND = 1.0 * trend_mult
+        W_MOMENTUM = 2.0 * osc_mult
+        W_VOLUME = 1.5
+        W_PATTERN = 1.5
         
     price = get_val('price')
     span_a = get_val('span_a')
@@ -981,12 +1209,15 @@ def calculate_decision_score(data, weekly_data=None, rsi_limit=75):
         
     return int(normalized_score), reasons
 
-def calculate_smart_score(data, weekly_data=None, atr_mult=None, tp_ratio=None, rsi_limit=75):
+def calculate_smart_score(data, weekly_data=None, atr_mult=None, tp_ratio=None, rsi_limit=75, indicator_dna=None):
     """
-    rsi_limit parametresi eklendi.
+    Akıllı skor hesaplama fonksiyonu.
+    
+    Args:
+        indicator_dna: Hissenin DNA analizi (analyze_indicator_dna'dan)
     """
-    # Karar skorunu optimize edilmiş RSI limitiyle hesapla
-    score, reasons = calculate_decision_score(data, weekly_data, rsi_limit=rsi_limit)
+    # Karar skorunu dinamik ağırlıklarla hesapla
+    score, reasons = calculate_decision_score(data, weekly_data, rsi_limit=rsi_limit, indicator_dna=indicator_dna)
     
     # Renk ve Etiket
     if score >= 80:
@@ -1388,6 +1619,9 @@ with tab_analiz:
             data = get_advanced_data(target_symbol.upper().strip())
             weekly_data = get_weekly_trend(target_symbol.upper().strip())
             
+            # YENİ: DNA ANALİZİ (Hissenin favori indikatörlerini bul)
+            indicator_dna = analyze_indicator_dna(target_symbol.upper().strip())
+            
             # ÖNCE OPTİMİZASYON YAP
             best_params = optimize_strategy_robust(target_symbol.upper().strip())
             
@@ -1400,14 +1634,18 @@ with tab_analiz:
             )
         
         if data:
+            # YENİ: Piyasa Rejimi Tespiti
+            regime, osc_mult, trend_mult = detect_market_regime(data.get('adx', 20))
+            
             # ═══ SİNYAL SKORU (SNIPER ALGORİTMASI v4 - Unified) ═══
-            # Optimize edilmiş parametreleri sinyal hesaplamasına gönder
+            # Optimize edilmiş parametreleri ve DNA'yı sinyal hesaplamasına gönder
             score, signal, signal_color, reasons, risk_levels = calculate_smart_score(
                 data, 
                 weekly_data, 
                 atr_mult=best_params['atr_multiplier'],
                 tp_ratio=best_params['take_profit_ratio'],
-                rsi_limit=best_params['rsi_limit'] # YENİ
+                rsi_limit=best_params['rsi_limit'],
+                indicator_dna=indicator_dna  # YENİ: Dinamik ağırlıklar
             )
             
             # Karar Paneli
@@ -1475,6 +1713,79 @@ with tab_analiz:
 </div>
 </div>
 {bt_html}
+</div>
+''', unsafe_allow_html=True)
+            
+            # ═══ PİYASA REJİMİ & İNDİKATÖR DNA ═══
+            st.markdown('<div class="section-title">Piyasa Rejimi & İndikatör DNA</div>', unsafe_allow_html=True)
+            
+            reg_col1, reg_col2 = st.columns([1, 2])
+            
+            with reg_col1:
+                # Rejim renkleri
+                regime_colors = {
+                    "RANGE": "#fbbf24",      # Sarı - Yatay
+                    "TRANSITION": "#60a5fa", # Mavi - Geçiş
+                    "TREND": "#10b981"       # Yeşil - Trend
+                }
+                regime_labels = {
+                    "RANGE": "📊 YATAY PİYASA",
+                    "TRANSITION": "⚖️ GEÇİŞ",
+                    "TREND": "📈 TREND"
+                }
+                regime_desc = {
+                    "RANGE": "RSI ve Stokastik odaklı",
+                    "TRANSITION": "Dengeli yaklaşım",
+                    "TREND": "EMA ve MACD odaklı"
+                }
+                
+                regime_color = regime_colors.get(regime, "#60a5fa")
+                st.markdown(f'''
+<div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 1rem; text-align: center;">
+<div style="font-size: 0.65rem; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 1px;">Piyasa Rejimi</div>
+<div style="font-size: 1.5rem; color: {regime_color}; font-weight: 700; margin: 0.5rem 0;">{regime_labels.get(regime, regime)}</div>
+<div style="font-size: 0.7rem; color: rgba(255,255,255,0.5);">ADX: {data.get('adx', 0):.1f}</div>
+<div style="font-size: 0.65rem; color: rgba(255,255,255,0.35); margin-top: 0.25rem;">{regime_desc.get(regime, "")}</div>
+</div>
+''', unsafe_allow_html=True)
+            
+            with reg_col2:
+                # DNA sonuçları
+                if indicator_dna:
+                    trend_w = indicator_dna.get('trend_weight', 1.0)
+                    mom_w = indicator_dna.get('momentum_weight', 1.0)
+                    vol_w = indicator_dna.get('volume_weight', 1.0)
+                    
+                    trend_success = indicator_dna.get('trend_success', 50)
+                    mom_success = indicator_dna.get('momentum_success', 50)
+                    vol_success = indicator_dna.get('volume_success', 50)
+                    
+                    st.markdown(f'''
+<div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 1rem;">
+<div style="font-size: 0.65rem; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.75rem;">İndikatör DNA (Son 60 Gün)</div>
+<div style="display: flex; gap: 1rem;">
+<div style="flex: 1;">
+<div style="font-size: 0.6rem; color: rgba(255,255,255,0.35);">Trend (EMA/ADX)</div>
+<div style="background: rgba(255,255,255,0.05); border-radius: 4px; height: 6px; margin: 0.25rem 0;">
+<div style="height: 100%; width: {min(trend_success, 100)}%; background: #10b981; border-radius: 4px;"></div>
+</div>
+<div style="font-size: 0.7rem; color: #10b981;">%{trend_success:.0f} başarı → {trend_w:.1f}x</div>
+</div>
+<div style="flex: 1;">
+<div style="font-size: 0.6rem; color: rgba(255,255,255,0.35);">Momentum (RSI)</div>
+<div style="background: rgba(255,255,255,0.05); border-radius: 4px; height: 6px; margin: 0.25rem 0;">
+<div style="height: 100%; width: {min(mom_success, 100)}%; background: #3b82f6; border-radius: 4px;"></div>
+</div>
+<div style="font-size: 0.7rem; color: #3b82f6;">%{mom_success:.0f} başarı → {mom_w:.1f}x</div>
+</div>
+<div style="flex: 1;">
+<div style="font-size: 0.6rem; color: rgba(255,255,255,0.35);">Hacim (CMF)</div>
+<div style="background: rgba(255,255,255,0.05); border-radius: 4px; height: 6px; margin: 0.25rem 0;">
+<div style="height: 100%; width: {min(vol_success, 100)}%; background: #f59e0b; border-radius: 4px;"></div>
+</div>
+<div style="font-size: 0.7rem; color: #f59e0b;">%{vol_success:.0f} başarı → {vol_w:.1f}x</div>
+</div>
+</div>
 </div>
 ''', unsafe_allow_html=True)
             
