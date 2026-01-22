@@ -5,6 +5,7 @@ from plotly.subplots import make_subplots
 import google.generativeai as genai
 import pandas as pd
 import numpy as np
+import time
 # import optuna (Kaldırıldı - Native Grid Search kullanılacak)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1620,15 +1621,17 @@ def calculate_wyckoff_score(data, df):
 # 3.7 BACKTEST MOTORU
 # ═══════════════════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=600)
-def run_robust_backtest(symbol, atr_mult=3.0, tp_ratio=0, rsi_limit=75):
+def run_robust_backtest(df, atr_mult=3.0, tp_ratio=0, rsi_limit=75):
     """
     rsi_limit parametresi eklendi.
+    Artık sembol yerine DataFrame (df) alıyor.
     """
     try:
-        # 1. Veri Hazırlığı
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period="2y")
-        if df.empty or len(df) < 200: return None
+        # 1. Veri Kontrolü
+        if df is None or df.empty or len(df) < 200: return None
+        
+        # DataFrame'i kopyala (orijinali bozmamak için)
+        df = df.copy()
         
         # ─── İndikatör Hesaplamaları ───
         closes = df['Close']
@@ -1951,8 +1954,16 @@ def optimize_strategy_robust(symbol):
     """
     Gelişmiş Grid Search:
     Hem Çıkış (ATR Stop) hem de Giriş (RSI Limiti) ayarlarını optimize eder.
+    Veriyi tek seferde indirir.
     """
     try:
+        # Veriyi burada sadece 1 kere indiriyoruz
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period="2y")
+        
+        if df.empty or len(df) < 200:
+            return {'atr_multiplier': 2.5, 'take_profit_ratio': 2.0, 'rsi_limit': 75}
+
         # Taranacak parametreler
         # rsi_limit: 75 (Güvenli) vs 85 (Ralli/Agresif)
         param_grid = {
@@ -1974,8 +1985,9 @@ def optimize_strategy_robust(symbol):
             for tp_ratio in param_grid['take_profit_ratio']:
                 for rsi_lim in param_grid['rsi_limit']:
                     
+                    # Artık sembol değil, indirilmiş df'i gönderiyoruz
                     result = run_robust_backtest(
-                        symbol, 
+                        df, 
                         atr_mult=atr_mult, 
                         tp_ratio=tp_ratio,
                         rsi_limit=rsi_lim
@@ -2552,6 +2564,9 @@ def scan_market(stock_list, progress_callback=None):
         result = scan_single_stock(symbol)
         if result:
             results.append(result)
+        
+        # Her hisseden sonra bekleme (Rate Limit engellemek için)
+        time.sleep(0.5)
     
     # Skora göre sırala (yüksekten düşüğe)
     results.sort(key=lambda x: x['_score'], reverse=True)
@@ -2615,8 +2630,12 @@ with tab_analiz:
             best_params = optimize_strategy_robust(target_symbol.upper().strip())
             
             # SONRA BU PARAMETRELERLE BACKTEST ÇALIŞTIR
+            # run_robust_backtest artık df istiyor, bu yüzden indiriyoruz
+            ticker_bt = yf.Ticker(target_symbol.upper().strip())
+            df_bt = ticker_bt.history(period="2y")
+            
             backtest_results = run_robust_backtest(
-                target_symbol.upper().strip(), 
+                df_bt, 
                 atr_mult=best_params['atr_multiplier'],
                 tp_ratio=best_params['take_profit_ratio'],
                 rsi_limit=best_params['rsi_limit'] # YENİ
